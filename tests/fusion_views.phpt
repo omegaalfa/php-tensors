@@ -2,13 +2,13 @@
 Fusion boundaries consume offset and non-contiguous views without double offsets
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 ?>
 --FILE--
 <?php
-use Cuda\CudaArray;
-use Cuda\Fusion;
+use PhpTensors\CudaArray;
+use PhpTensors\Fusion;
 $base = new CudaArray([[10, 20, 30], [40, 50, 60]]);
 $slice = $base[1];
 $graph = Fusion::compile(fn($x) => $x->sum() + 1, [$slice]);

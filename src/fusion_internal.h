@@ -7,6 +7,7 @@
 #include "ca_private.h"
 #include "compiler_ce.h"
 #include "kernel_types.h"
+#include "tensor_transform.h"
 #include "zend_smart_str.h"
 #include <cuda.h>
 #include <limits.h>
@@ -23,8 +24,12 @@ typedef enum
 typedef enum
 {
     FUSION_INPUT, FUSION_BINARY, FUSION_SCALAR, FUSION_UNARY,
-    FUSION_REDUCE, FUSION_ARG_REDUCE, FUSION_MATMUL, FUSION_VIEW,
-    FUSION_CAST, FUSION_WHERE
+    FUSION_REDUCE, FUSION_ARG_REDUCE, FUSION_SCAN, FUSION_MATMUL, FUSION_VIEW,
+    FUSION_CAST, FUSION_WHERE, FUSION_SLICE_SCATTER,
+    FUSION_GATHER, FUSION_SCATTER_ADD, FUSION_CONCAT, FUSION_REPEAT_COUNTS,
+    FUSION_TRANSFORM,
+    FUSION_TRANSFORM_BACKWARD, FUSION_REPEAT_COUNTS_BACKWARD,
+    FUSION_SCAN_BACKWARD
 } fusion_kind;
 
 typedef struct fusion_node
@@ -41,6 +46,9 @@ typedef struct fusion_node
     size_t slice_strides[MAX_DIMS];
     int slice_starts[MAX_DIMS];
     int slice_steps[MAX_DIMS];
+    int *repeat_prefix_counts;
+    size_t repeat_count;
+    tensor_transform_spec_t transform;
 } fusion_node;
 
 typedef struct fusion_scope
@@ -106,12 +114,16 @@ typedef struct
     CUgraph cuda_graph;
     CUgraphExec graph_exec;
     CUgraphNode *graph_nodes;
+    CUstream graph_capture_stream;
+    int native_warmed;
     size_t graph_launches;
     size_t buffer_reuses;
     size_t pending;
     int cuda_graph_requested;
     size_t tensor_allocations;
     size_t synchronizations;
+    int execution_complete;
+    void *indexed_validation_error;
     int profiling;
     size_t profiled_executions;
     uint64_t bind_ns, execute_ns, collect_ns;

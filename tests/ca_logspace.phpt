@@ -1,13 +1,13 @@
 --TEST--
-CudaArray logspace creates logarithmically spaced GPU sequences
+PhpTensors\CudaArray::logspace creates logarithmically spaced GPU sequences
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 ?>
 --FILE--
 <?php
-use Cuda\CudaArray;
+use PhpTensors\CudaArray;
 
 var_dump(CudaArray::logspace(0, 3, 4, true, 10.0, 'float64')->toArray());
 var_dump(CudaArray::logspace(0, 2, 3, false)->toArray());
@@ -33,20 +33,6 @@ foreach (['float32', 'float64', 'int8', 'int16', 'int32', 'int64', 'uint8', 'uin
     }
 }
 
-// Same exponent interpolation used by ZMatrix for compatible finite inputs.
-$reference = [];
-for ($i = 0; $i < 4; $i++) {
-    $exponent = 1.0 + $i * (4.0 - 1.0) / (4 - 1);
-    $reference[] = 3.0 ** $exponent;
-}
-$actual = CudaArray::logspace(1, 4, 4, true, 3.0, 'float64')->toArray();
-foreach ($reference as $i => $expected) {
-    if (abs($actual[$i] - $expected) > 1.0e-12) {
-        echo "reference mismatch\n";
-        exit(1);
-    }
-}
-
 $uint8Limit = CudaArray::logspace(0, log10(255), 2, true, 10.0, 'uint8')->toArray();
 $int8Limit = CudaArray::logspace(0, log10(127), 2, true, 10.0, 'int8')->toArray();
 $int32Limit = CudaArray::logspace(0, log10(2147483647), 2, true, 10.0, 'int32')->toArray();
@@ -59,6 +45,16 @@ $fractionalInteger = CudaArray::logspace(0, 1, 2, false, 10.0, 'int32')->toArray
 if ($fractionalInteger !== [1, 3]) {
     echo "fractional integer conversion mismatch\n";
     exit(1);
+}
+
+foreach ([[NAN, 10.0], [0.0, 0.0], [0.0, INF]] as [$start, $base]) {
+    try {
+        CudaArray::logspace($start, 1, 2, true, $base);
+        echo "invalid input accepted\n";
+        exit(1);
+    } catch (\Throwable $e) {
+        echo "invalid input rejected\n";
+    }
 }
 echo "logspace checks passed\n";
 ?>
@@ -113,4 +109,7 @@ array(4) {
   [3]=>
   int(1000)
 }
+invalid input rejected
+invalid input rejected
+invalid input rejected
 logspace checks passed

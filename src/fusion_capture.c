@@ -1,4 +1,5 @@
 #include "fusion_internal.h"
+#include "autograd.h"
 int fusion_active(void)
 {
     return CUDA_G(fusion_scope) != NULL;
@@ -117,12 +118,15 @@ void fusion_release_node(tensor_t *tensor)
     cuda_tensor_destroy(node->a);
     cuda_tensor_destroy(node->b);
     cuda_tensor_destroy(node->c);
+    if (node->repeat_prefix_counts) efree(node->repeat_prefix_counts);
     efree(node);
 }
 
 void fusion_scope_free(fusion_scope *scope, int invalidate)
 {
     if (!scope) return;
+    for (size_t i = 0; i < scope->count; i++)
+        autograd_clear_gradient(scope->nodes[i]);
     if (invalidate)
     {
         for (size_t i = 0; i < scope->count; i++)
@@ -165,7 +169,9 @@ tensor_t *fusion_binary(tensor_t *a, tensor_t *b, operation_type_t op)
                            dtype_to_string(a->dtype), dtype_to_string(b->dtype), dtype_to_string(dtype));
         return NULL;
     }
-    return fusion_record(FUSION_BINARY, a, b, op, shape, ndims, dtype);
+    tensor_t *tensor = fusion_record(FUSION_BINARY, a, b, op, shape, ndims, dtype);
+    if (tensor) autograd_record_binary(tensor, a, b, op);
+    return tensor;
 }
 
 tensor_t *fusion_scalar(tensor_t *a, scalar_value_t scalar, operation_type_t op, int inverse)
@@ -176,18 +182,34 @@ tensor_t *fusion_scalar(tensor_t *a, scalar_value_t scalar, operation_type_t op,
     {
         tensor->fusion->scalar = scalar;
         tensor->fusion->parameter = inverse;
+        autograd_record_scalar(tensor, a, scalar, op, inverse);
     }
     return tensor;
 }
 
 tensor_t *fusion_unary(tensor_t *a, operation_type_t op)
 {
-    return fusion_record(FUSION_UNARY, a, NULL, op, a->shape, a->ndims, a->dtype);
+    tensor_t *tensor = fusion_record(FUSION_UNARY, a, NULL, op, a->shape, a->ndims, a->dtype);
+    if (tensor) autograd_record_unary(tensor, a, op);
+    return tensor;
 }
 
 tensor_t *fusion_cast(tensor_t *a, dtype_t dtype)
 {
-    return fusion_record(FUSION_CAST, a, NULL, OP_ADD, a->shape, a->ndims, dtype);
+    int low_precision_source = a->dtype == DTYPE_FLOAT16 || a->dtype == DTYPE_BFLOAT16;
+    int low_precision_target = dtype == DTYPE_FLOAT16 || dtype == DTYPE_BFLOAT16;
+    if ((low_precision_source && dtype != DTYPE_FLOAT32) || low_precision_target)
+    {
+        CUDA_THROW_INVALID("Fusion supports widening float16 or bfloat16 to float32 only");
+        return NULL;
+    }
+    tensor_t *tensor = fusion_record(FUSION_CAST, a, NULL, OP_ADD, a->shape, a->ndims, dtype);
+    if (tensor && !autograd_record_cast(tensor, a))
+    {
+        cuda_tensor_destroy(tensor);
+        return NULL;
+    }
+    return tensor;
 }
 
 tensor_t *fusion_where(tensor_t *condition, tensor_t *x, tensor_t *y)
@@ -228,12 +250,21 @@ tensor_t *fusion_where(tensor_t *condition, tensor_t *x, tensor_t *y)
     {
         tensor->fusion->c = y;
         y->ref_count++;
+        autograd_record_where(tensor, condition, x, y);
     }
     return tensor;
 }
 
 tensor_t *fusion_reduce(tensor_t *a, int axis, operation_type_t op, int arg)
 {
+    if (a->dtype == DTYPE_FLOAT16 || a->dtype == DTYPE_BFLOAT16)
+    {
+        tensor_t *promoted = fusion_cast(a, DTYPE_FLOAT32);
+        tensor_t *result = promoted
+            ? fusion_reduce(promoted, axis, op, arg) : NULL;
+        if (promoted) cuda_tensor_destroy(promoted);
+        return result;
+    }
     int shape[MAX_DIMS];
     size_t total;
     int ndims;
@@ -253,11 +284,82 @@ tensor_t *fusion_reduce(tensor_t *a, int axis, operation_type_t op, int arg)
         return NULL;
     }
     dtype_t dtype = arg ? DTYPE_INT32 :
+        (op == OP_REDUCE_ALL || op == OP_REDUCE_ANY) ? DTYPE_BOOL :
         op == OP_REDUCE_MEAN ?
             (a->dtype == DTYPE_FLOAT64 || dtype_is_integer(a->dtype) || a->dtype == DTYPE_BOOL
                 ? DTYPE_FLOAT64 : DTYPE_FLOAT32) : a->dtype;
     tensor_t *tensor = fusion_record(arg ? FUSION_ARG_REDUCE : FUSION_REDUCE,
                                     a, NULL, op, shape, ndims, dtype);
+    if (tensor)
+    {
+        tensor->fusion->parameter = axis;
+        autograd_record_reduce(tensor, a, op, axis);
+    }
+    return tensor;
+}
+
+tensor_t *fusion_scan(tensor_t *a, int axis, operation_type_t op)
+{
+    if (!a || (op != OP_CUMSUM && op != OP_CUMPROD) ||
+        axis < -1 || axis >= a->ndims)
+    {
+        CUDA_THROW_INVALID("Invalid Fusion cumulative scan operation or axis");
+        return NULL;
+    }
+    if (a->dtype == DTYPE_FLOAT16 || a->dtype == DTYPE_BFLOAT16)
+    {
+        tensor_t *promoted = fusion_cast(a, DTYPE_FLOAT32);
+        tensor_t *result = promoted
+            ? fusion_scan(promoted, axis, op) : NULL;
+        if (promoted) cuda_tensor_destroy(promoted);
+        return result;
+    }
+    dtype_t dtype = cuda_cumulative_result_dtype(a->dtype);
+    if (dtype == DTYPE_UNKNOWN)
+    {
+        CUDA_THROW_INVALID("Cumulative scans do not support dtype %s",
+                           dtype_to_string(a->dtype));
+        return NULL;
+    }
+
+    int shape[MAX_DIMS];
+    int ndims;
+    if (axis == -1)
+    {
+        if (a->total_size > INT_MAX)
+        {
+            CUDA_THROW_INVALID("Flattened cumulative scan exceeds the supported dimension size");
+            return NULL;
+        }
+        shape[0] = (int)a->total_size;
+        ndims = 1;
+    }
+    else
+    {
+        memcpy(shape, a->shape, a->ndims * sizeof(int));
+        ndims = a->ndims;
+    }
+    tensor_t *tensor = fusion_record(FUSION_SCAN, a, NULL, op, shape, ndims, dtype);
+    if (tensor)
+    {
+        tensor->fusion->parameter = axis;
+        autograd_record_scan(tensor, a, op, axis);
+    }
+    return tensor;
+}
+
+tensor_t *fusion_scan_backward(tensor_t *input, tensor_t *upstream, int axis)
+{
+    if (!input || !upstream || axis < -1 || axis >= input->ndims ||
+        input->dtype != upstream->dtype ||
+        (input->dtype != DTYPE_FLOAT32 && input->dtype != DTYPE_FLOAT64))
+    {
+        CUDA_THROW_INVALID("Fusion cumulative product gradient requires matching float32/float64 inputs and a valid axis");
+        return NULL;
+    }
+    tensor_t *tensor = fusion_record(FUSION_SCAN_BACKWARD, input, upstream,
+                                     OP_CUMPROD, input->shape, input->ndims,
+                                     upstream->dtype);
     if (tensor) tensor->fusion->parameter = axis;
     return tensor;
 }
@@ -271,12 +373,251 @@ tensor_t *fusion_matmul(tensor_t *a, tensor_t *b)
         CUDA_THROW_INVALID("Matrix multiplication failed - incompatible dimensions");
         return NULL;
     }
-    if (a->dtype != DTYPE_FLOAT32 || b->dtype != DTYPE_FLOAT32)
+    if (a->dtype != b->dtype ||
+        (a->dtype != DTYPE_FLOAT32 && a->dtype != DTYPE_FLOAT16 &&
+         a->dtype != DTYPE_BFLOAT16))
     {
-        CUDA_THROW_INVALID("Fusion matmul currently requires float32 operands");
+        CUDA_THROW_INVALID("Fusion matmul requires matching float32, float16 or bfloat16 operands");
         return NULL;
     }
-    return fusion_record(FUSION_MATMUL, a, b, OP_MATMUL, shape, ndims, DTYPE_FLOAT32);
+    tensor_t *tensor = fusion_record(FUSION_MATMUL, a, b, OP_MATMUL, shape, ndims, a->dtype);
+    if (tensor) autograd_record_matmul(tensor, a, b);
+    return tensor;
+}
+
+tensor_t *fusion_indexed_gather(tensor_t *input, tensor_t *indices, int axis)
+{
+    if (!cuda_tensor_validate_indexed_shapes(input, indices, NULL, axis, "gather"))
+        return NULL;
+
+    tensor_t *tensor = fusion_record(FUSION_GATHER, input, indices, OP_ADD,
+                                     indices->shape, indices->ndims, input->dtype);
+    if (tensor)
+    {
+        tensor->fusion->parameter = axis;
+        autograd_record_gather(tensor, input, indices, axis);
+    }
+    return tensor;
+}
+
+tensor_t *fusion_indexed_scatter_add(tensor_t *input, tensor_t *indices,
+                                     tensor_t *updates, int axis)
+{
+    if (!cuda_tensor_validate_indexed_shapes(input, indices, updates, axis, "scatterAdd"))
+        return NULL;
+    if (input->dtype == DTYPE_FLOAT16 || input->dtype == DTYPE_BFLOAT16)
+    {
+        tensor_t *promoted_input = fusion_cast(input, DTYPE_FLOAT32);
+        tensor_t *promoted_updates = promoted_input
+            ? fusion_cast(updates, DTYPE_FLOAT32) : NULL;
+        tensor_t *result = promoted_updates
+            ? fusion_indexed_scatter_add(
+                  promoted_input, indices, promoted_updates, axis)
+            : NULL;
+        if (promoted_input) cuda_tensor_destroy(promoted_input);
+        if (promoted_updates) cuda_tensor_destroy(promoted_updates);
+        return result;
+    }
+    if (input->dtype != DTYPE_FLOAT32 && input->dtype != DTYPE_FLOAT64)
+    {
+        CUDA_THROW_INVALID("scatterAdd currently supports float32 and float64 tensors");
+        return NULL;
+    }
+
+    tensor_t *tensor = fusion_record(FUSION_SCATTER_ADD, input, indices, OP_ADD,
+                                     input->shape, input->ndims, input->dtype);
+    if (tensor)
+    {
+        tensor->fusion->c = updates;
+        updates->ref_count++;
+        tensor->fusion->parameter = axis;
+        autograd_record_scatter_add(tensor, input, indices, updates, axis);
+    }
+    return tensor;
+}
+
+tensor_t *fusion_concat(tensor_t **inputs, size_t input_count, int axis)
+{
+    if (!inputs || !input_count || input_count > MAX_CONCAT_TENSORS ||
+        !inputs[0] || axis < 0 || axis >= inputs[0]->ndims)
+    {
+        CUDA_THROW_INVALID("concat requires tensors and a valid axis");
+        return NULL;
+    }
+
+    int output_shape[MAX_DIMS];
+    memcpy(output_shape, inputs[0]->shape, inputs[0]->ndims * sizeof(int));
+    size_t axis_size = 0;
+    for (size_t i = 0; i < input_count; i++)
+    {
+        tensor_t *input = inputs[i];
+        if (!input || input->ndims != inputs[0]->ndims ||
+            input->dtype != inputs[0]->dtype)
+        {
+            CUDA_THROW_INVALID("concat inputs must have the same rank and dtype");
+            return NULL;
+        }
+        for (int dimension = 0; dimension < input->ndims; dimension++)
+            if (dimension != axis &&
+                input->shape[dimension] != inputs[0]->shape[dimension])
+            {
+                CUDA_THROW_INVALID("concat input shapes must match outside the concatenated axis");
+                return NULL;
+            }
+        if (input->shape[axis] < 0 ||
+            axis_size > (size_t)INT_MAX - (size_t)input->shape[axis])
+        {
+            CUDA_THROW_INVALID("Concatenated axis exceeds the supported dimension size");
+            return NULL;
+        }
+        axis_size += (size_t)input->shape[axis];
+    }
+    output_shape[axis] = (int)axis_size;
+
+    tensor_t *current = inputs[0];
+    int current_owned = 0;
+    size_t first_input = 1;
+    if (input_count == 1)
+    {
+        tensor_t *copy = fusion_record(FUSION_CONCAT, current, NULL, OP_ADD,
+                                       output_shape, current->ndims, current->dtype);
+        if (!copy) return NULL;
+        copy->fusion->parameter = axis;
+        autograd_record_concat(copy, inputs, 1, axis);
+        return copy;
+    }
+
+    for (size_t i = first_input; i < input_count; i++)
+    {
+        int shape[MAX_DIMS];
+        memcpy(shape, current->shape, current->ndims * sizeof(int));
+        if (inputs[i]->shape[axis] > INT_MAX - shape[axis])
+        {
+            if (current_owned) cuda_tensor_destroy(current);
+            CUDA_THROW_INVALID("Concatenated axis exceeds the supported dimension size");
+            return NULL;
+        }
+        shape[axis] += inputs[i]->shape[axis];
+        tensor_t *concat = fusion_record(FUSION_CONCAT, current, inputs[i], OP_ADD,
+                                         shape, current->ndims, current->dtype);
+        if (!concat)
+        {
+            if (current_owned) cuda_tensor_destroy(current);
+            return NULL;
+        }
+        concat->fusion->parameter = axis;
+        tensor_t *parents[] = {current, inputs[i]};
+        autograd_record_concat(concat, parents, 2, axis);
+        if (current_owned) cuda_tensor_destroy(current);
+        current = concat;
+        current_owned = 1;
+    }
+    return current;
+}
+
+tensor_t *fusion_transform(tensor_t *a, const tensor_transform_spec_t *spec)
+{
+    if (!a || !spec || spec->input_ndims != a->ndims ||
+        spec->output_ndims < 1 || spec->output_ndims > MAX_DIMS ||
+        spec->op < OP_DIAGONAL || spec->op > OP_ROLL)
+    {
+        CUDA_THROW_INVALID("Invalid Fusion tensor transform metadata");
+        return NULL;
+    }
+
+    tensor_t *tensor = fusion_record(FUSION_TRANSFORM, a, NULL, spec->op,
+                                     spec->output_shape, spec->output_ndims,
+                                     a->dtype);
+    if (tensor)
+    {
+        tensor->fusion->transform = *spec;
+        if (!autograd_record_index_transform(tensor, a, spec))
+        {
+            cuda_tensor_destroy(tensor);
+            return NULL;
+        }
+    }
+    return tensor;
+}
+
+tensor_t *fusion_transform_backward(tensor_t *upstream,
+                                    const tensor_transform_spec_t *spec)
+{
+    if (!upstream || !spec ||
+        (upstream->dtype != DTYPE_FLOAT32 && upstream->dtype != DTYPE_FLOAT64) ||
+        upstream->ndims != spec->output_ndims)
+    {
+        CUDA_THROW_INVALID("Invalid Fusion tensor transform gradient metadata");
+        return NULL;
+    }
+    for (int axis = 0; axis < upstream->ndims; axis++)
+        if (upstream->shape[axis] != spec->output_shape[axis])
+        {
+            CUDA_THROW_INVALID("Fusion tensor transform gradient shape mismatch");
+            return NULL;
+        }
+
+    tensor_t *tensor = fusion_record(FUSION_TRANSFORM_BACKWARD, upstream, NULL,
+                                    spec->op, spec->input_shape,
+                                    spec->input_ndims, upstream->dtype);
+    if (tensor) tensor->fusion->transform = *spec;
+    return tensor;
+}
+
+tensor_t *fusion_repeat_counts(tensor_t *a, const int *prefix_counts,
+                               size_t count, int axis,
+                               const int *output_shape, int output_ndims)
+{
+    if (!a || (count && !prefix_counts) || !output_shape ||
+        count > (size_t)INT_MAX || count > SIZE_MAX / sizeof(int) ||
+        output_ndims < 1 ||
+        output_ndims > MAX_DIMS || axis < -1 || axis >= a->ndims)
+    {
+        CUDA_THROW_INVALID("Invalid Fusion repeat-count metadata");
+        return NULL;
+    }
+    dtype_t dtype = a->dtype;
+    tensor_t *tensor = fusion_record(FUSION_REPEAT_COUNTS, a, NULL, OP_REPEAT,
+                                     (int *)output_shape, output_ndims, dtype);
+    if (!tensor) return NULL;
+    fusion_node *node = tensor->fusion;
+    node->parameter = axis;
+    node->repeat_count = count;
+    if (count)
+    {
+        node->repeat_prefix_counts = emalloc(count * sizeof(int));
+        memcpy(node->repeat_prefix_counts, prefix_counts, count * sizeof(int));
+    }
+    autograd_record_repeat_counts(tensor, a, prefix_counts, count, axis);
+    return tensor;
+}
+
+tensor_t *fusion_repeat_counts_backward(tensor_t *upstream,
+                                        const int *prefix_counts, size_t count,
+                                        int axis, const int *input_shape,
+                                        int input_ndims)
+{
+    if (!upstream || (count && !prefix_counts) || !input_shape ||
+        input_ndims < 1 || input_ndims > MAX_DIMS ||
+        axis < -1 || axis >= input_ndims ||
+        count > (size_t)INT_MAX || count > SIZE_MAX / sizeof(int))
+    {
+        CUDA_THROW_INVALID("Invalid Fusion repeat-count gradient metadata");
+        return NULL;
+    }
+    tensor_t *tensor = fusion_record(FUSION_REPEAT_COUNTS_BACKWARD, upstream,
+                                     NULL, OP_REPEAT, (int *)input_shape,
+                                     input_ndims, upstream->dtype);
+    if (!tensor) return NULL;
+    fusion_node *node = tensor->fusion;
+    node->parameter = axis;
+    node->repeat_count = count;
+    if (count)
+    {
+        node->repeat_prefix_counts = emalloc(count * sizeof(int));
+        memcpy(node->repeat_prefix_counts, prefix_counts, count * sizeof(int));
+    }
+    return tensor;
 }
 
 tensor_t *fusion_view(tensor_t *a, operation_type_t op, int *shape, size_t *strides, int ndims, int *axes)
@@ -287,6 +628,8 @@ tensor_t *fusion_view(tensor_t *a, operation_type_t op, int *shape, size_t *stri
         memcpy(tensor->strides, strides, ndims * sizeof(size_t));
         tensor->is_contiguous_cached = -1;
         if (axes) memcpy(tensor->fusion->axes, axes, ndims * sizeof(int));
+        if (op != OP_SLICE)
+            autograd_record_view(tensor, a, op, axes);
     }
     return tensor;
 }
@@ -307,5 +650,54 @@ tensor_t *fusion_slice(tensor_t *a, int *shape, size_t *strides, int ndims,
             if (axes[j] == d) node->slice_strides[j] = logical_stride * (size_t)steps[d];
         logical_stride *= a->shape[d];
     }
+    autograd_record_slice(tensor, a, axes, starts, steps);
+    return tensor;
+}
+
+tensor_t *fusion_slice_scatter(tensor_t *updates, const int *input_shape,
+                               int input_ndims, const int *axes,
+                               const int *starts, const int *steps)
+{
+    if (!updates || input_ndims < 0 || input_ndims > MAX_DIMS ||
+        updates->ndims < 0 || updates->ndims > input_ndims ||
+        (input_ndims > 0 && (!input_shape || !starts || !steps)) ||
+        (updates->ndims > 0 && (!updates->shape || !axes)))
+    {
+        CUDA_THROW_INVALID("Invalid Fusion slice-gradient metadata");
+        return NULL;
+    }
+    int used[MAX_DIMS] = {0};
+    for (int d = 0; d < input_ndims; d++)
+    {
+        if (input_shape[d] < 0 || starts[d] < 0 || steps[d] <= 0 ||
+            (input_shape[d] > 0 && starts[d] > input_shape[d]))
+        {
+            CUDA_THROW_INVALID("Invalid Fusion slice-gradient bounds");
+            return NULL;
+        }
+    }
+    for (int d = 0; d < updates->ndims; d++)
+    {
+        if (axes[d] < 0 || axes[d] >= input_ndims || used[axes[d]] ||
+            updates->shape[d] < 0)
+        {
+            CUDA_THROW_INVALID("Invalid Fusion slice-gradient axis mapping");
+            return NULL;
+        }
+        used[axes[d]] = 1;
+    }
+
+    tensor_t *tensor = fusion_record(FUSION_SLICE_SCATTER, updates, NULL,
+                                    OP_SLICE, input_shape, input_ndims,
+                                    updates->dtype);
+    if (!tensor)
+        return NULL;
+    for (int d = 0; d < input_ndims; d++)
+    {
+        tensor->fusion->slice_starts[d] = starts[d];
+        tensor->fusion->slice_steps[d] = steps[d];
+    }
+    for (int d = 0; d < updates->ndims; d++)
+        tensor->fusion->axes[d] = axes[d];
     return tensor;
 }

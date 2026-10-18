@@ -11,35 +11,9 @@
 #include <stdatomic.h>
 #include <unistd.h>
 #if defined(__linux__)
+#include <errno.h>
 #include <sys/random.h>
 #endif
-
-static _Atomic unsigned long long randn_seed_counter = 0;
-
-static unsigned long long randn_next_seed(const void *data)
-{
-    unsigned long long entropy = 0;
-    unsigned long long counter = atomic_fetch_add_explicit(
-        &randn_seed_counter, 1, memory_order_relaxed) + 1;
-    struct timespec timestamp = {0, 0};
-
-#if defined(__linux__)
-    if (getrandom(&entropy, sizeof(entropy), GRND_NONBLOCK) !=
-        (ssize_t)sizeof(entropy)) {
-        entropy = 0;
-    }
-#endif
-    (void)clock_gettime(CLOCK_MONOTONIC, &timestamp);
-
-    unsigned long long clock_bits =
-        ((unsigned long long)timestamp.tv_sec << 32) ^
-        (unsigned long long)timestamp.tv_nsec;
-    unsigned long long seed = entropy ^ clock_bits ^
-        (unsigned long long)getpid() ^ (unsigned long long)(uintptr_t)data ^
-        counter * 0x9E3779B97F4A7C15ULL;
-
-    return seed != 0 ? seed : (counter != 0 ? counter : 1);
-}
 
 typedef struct {
     tensor_t *tensor;
@@ -129,6 +103,52 @@ DEFINE_FLATTENER(uint16, uint16_t)
 DEFINE_FLATTENER(uint32, uint32_t)
 DEFINE_FLATTENER(uint64, uint64_t)
 DEFINE_FLATTENER(_bool, bool)
+
+#define DEFINE_LOW_PRECISION_FLATTENER(type_name, converter) \
+    static int flatten_php_array_to_##type_name(zval *data, uint16_t **buffer, \
+                                                const int *shape, int ndims, int dim, \
+                                                php_import_sink *sink, const void *limit) \
+    { \
+        ZVAL_DEREF(data); \
+        if (Z_TYPE_P(data) != IS_ARRAY || zend_hash_num_elements(Z_ARRVAL_P(data)) != (uint32_t)shape[dim]) \
+            return 0; \
+        HashTable *ht = Z_ARRVAL_P(data); \
+        zval *current; \
+        if (dim == ndims - 1) { \
+            uint16_t *destination = *buffer; \
+            if (HT_IS_PACKED(ht) && HT_IS_WITHOUT_HOLES(ht)) { \
+                PHP_CUDA_PACKED_FOREACH_VAL(ht, current) { \
+                    float number; \
+                    COPY_NUMERIC_VALUE(float, current, &number); \
+                    *destination++ = converter(number); \
+                    if (UNEXPECTED(destination == (const uint16_t *)limit)) { \
+                        if (!php_import_flush(sink, (const char *)limit - (const char *)sink->data)) return 0; \
+                        destination = sink->data; \
+                    } \
+                } ZEND_HASH_FOREACH_END(); \
+            } else { \
+                ZEND_HASH_FOREACH_VAL(ht, current) { \
+                    float number; \
+                    COPY_NUMERIC_VALUE(float, current, &number); \
+                    *destination++ = converter(number); \
+                    if (UNEXPECTED(destination == (const uint16_t *)limit)) { \
+                        if (!php_import_flush(sink, (const char *)limit - (const char *)sink->data)) return 0; \
+                        destination = sink->data; \
+                    } \
+                } ZEND_HASH_FOREACH_END(); \
+            } \
+            *buffer = destination; \
+            return 1; \
+        } \
+        ZEND_HASH_FOREACH_VAL(ht, current) { \
+            if (!flatten_php_array_to_##type_name(current, buffer, shape, ndims, dim + 1, sink, limit)) \
+                return 0; \
+        } ZEND_HASH_FOREACH_END(); \
+        return 1; \
+    }
+
+DEFINE_LOW_PRECISION_FLATTENER(float16, float_to_float16_bits)
+DEFINE_LOW_PRECISION_FLATTENER(bfloat16, float_to_bfloat16_bits)
 
 static cudaError_t cuda_copy_host_buffer_to_gpu(void *gpu_data, const void *host_data, size_t byte_count);
 
@@ -227,6 +247,15 @@ static tensor_t *create_tensor_from_php_array_impl(zval *data, dtype_t dtype,
         FLATTEN_CASE(DTYPE_UINT32, uint32, uint32_t)
         FLATTEN_CASE(DTYPE_UINT64, uint64, uint64_t)
         FLATTEN_CASE(DTYPE_BOOL, _bool, bool)
+        case DTYPE_FLOAT16:
+        case DTYPE_BFLOAT16: {
+            uint16_t *destination = buffer;
+            valid = dtype == DTYPE_FLOAT16
+                ? flatten_php_array_to_float16(data, &destination, shape, ndims, 0, &sink, limit)
+                : flatten_php_array_to_bfloat16(data, &destination, shape, ndims, 0, &sink, limit);
+            end = destination;
+            break;
+        }
         default: break;
     }
 #undef FLATTEN_CASE
@@ -325,6 +354,8 @@ int cuda_tensor_get_scalar_value(tensor_t *t, float *result_val, int index)
     {
         case DTYPE_FLOAT32: *result_val = value.f32; break;
         case DTYPE_FLOAT64: *result_val = (float)value.f64; break;
+        case DTYPE_FLOAT16: *result_val = float16_bits_to_float(value.u16); break;
+        case DTYPE_BFLOAT16: *result_val = bfloat16_bits_to_float(value.u16); break;
         case DTYPE_INT8: *result_val = (float)value.i8; break;
         case DTYPE_INT16: *result_val = (float)value.i16; break;
         case DTYPE_INT32: *result_val = (float)value.i32; break;
@@ -371,6 +402,46 @@ void destroy_curand_generator(curandGenerator_t generator)
     }
 }
 
+static uint64_t random_seed_mix(uint64_t value)
+{
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
+static unsigned long long next_random_seed(void)
+{
+    static _Atomic uint64_t counter = 0;
+    uint64_t sequence = atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed) + 1;
+    uint64_t entropy = 0;
+    uint64_t clock_bits = 0;
+    struct timespec now;
+
+#if defined(__linux__)
+    ssize_t received;
+    do {
+        received = getrandom(&entropy, sizeof(entropy), GRND_NONBLOCK);
+    } while (received < 0 && errno == EINTR);
+    if (received != (ssize_t)sizeof(entropy)) entropy = 0;
+#endif
+
+#if defined(CLOCK_MONOTONIC)
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+        clock_bits = ((uint64_t)now.tv_sec * UINT64_C(1000000007)) ^ (uint64_t)now.tv_nsec;
+#else
+    if (timespec_get(&now, TIME_UTC) == TIME_UTC)
+        clock_bits = ((uint64_t)now.tv_sec * UINT64_C(1000000007)) ^ (uint64_t)now.tv_nsec;
+#endif
+
+    uint64_t process_bits = (uint64_t)(unsigned long)getpid();
+    uint64_t mixed = entropy ^ clock_bits ^ (process_bits << 32) ^ process_bits;
+    mixed ^= sequence * UINT64_C(0x9e3779b97f4a7c15);
+    mixed = random_seed_mix(mixed);
+    return (unsigned long long)(mixed ? mixed : random_seed_mix(sequence) | 1);
+}
+
 int set_rand_tensor_data(void *data,
                          size_t size,
                          unsigned long long seed,
@@ -378,6 +449,8 @@ int set_rand_tensor_data(void *data,
                          scalar_value_t max_value,
                          dtype_t dtype)
 {
+    if (!size) return SUCCESS;
+
     curandGenerator_t generator = NULL;
     curandStatus_t status;
 
@@ -391,44 +464,29 @@ int set_rand_tensor_data(void *data,
     status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
     if (status != CURAND_STATUS_SUCCESS)
     {
-        CUDA_THROW_RUNTIME("rand generator creation failed");
-        goto failure;
+        cuda_mem_free(temp);
+        CUDA_THROW_RUNTIME("Cannot create random generator (cuRAND error %d)", status);
+        return FAILURE;
     }
-
-    if (seed == 0)
-        seed = randn_next_seed(data);
 
     status = curandSetPseudoRandomGeneratorSeed(generator, seed);
+    if (status == CURAND_STATUS_SUCCESS)
+        status = curandGenerateUniform(generator, temp, size);
     if (status != CURAND_STATUS_SUCCESS)
     {
-        CUDA_THROW_RUNTIME("rand seed setup failed");
-        goto failure;
-    }
-
-    status = curandGenerateUniform(generator, temp, size);
-    if (status != CURAND_STATUS_SUCCESS)
-    {
-        CUDA_THROW_RUNTIME("rand generation failed");
-        goto failure;
-    }
-
-    cudaError_t generation_err = cudaDeviceSynchronize();
-    if (generation_err != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("rand generation failed: %s", cudaGetErrorString(generation_err));
-        goto failure;
+        CUDA_THROW_RUNTIME("Uniform random generation failed (cuRAND error %d)", status);
+        destroy_curand_generator(generator);
+        cuda_mem_free(temp);
+        return FAILURE;
     }
 
     if (dtype == DTYPE_BOOL)
-    {
         launch_bernoulli_kernel(temp, data, size, 0.5f);
-    }
     else
-    {
         launch_scale_range_kernel(temp, data, dtype, min_value, max_value, size);
-    }
 
-    cudaError_t err = cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    if (err == cudaSuccess) err = cudaDeviceSynchronize();
 
     destroy_curand_generator(generator);
     cuda_mem_free(temp);
@@ -440,11 +498,6 @@ int set_rand_tensor_data(void *data,
     }
 
     return SUCCESS;
-
-failure:
-    destroy_curand_generator(generator);
-    cuda_mem_free(temp);
-    return FAILURE;
 }
 
 tensor_t *cuda_tensor_create_rand(
@@ -453,8 +506,15 @@ tensor_t *cuda_tensor_create_rand(
     scalar_value_t min_value,
     scalar_value_t max_value,
     dtype_t dtype,
-    unsigned long long seed)
+    unsigned long long seed,
+    int has_seed)
 {
+    if (dtype == DTYPE_UNKNOWN || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("Invalid random tensor dtype");
+        return NULL;
+    }
+
     tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
     if (!tensor)
     {
@@ -465,22 +525,18 @@ tensor_t *cuda_tensor_create_rand(
     if (can_cast_unsafe(min_value.dtype, dtype) != 1 || can_cast_unsafe(max_value.dtype, dtype) != 1)
     {
         CUDA_THROW_INVALID("Failed to cast min and max value to dtype: %s.", dtype_to_string(dtype));
+        cuda_tensor_destroy(tensor);
         return NULL;
     }
 
     scalar_value_t casted_min = cast_single_value(min_value, dtype);
     scalar_value_t casted_max = cast_single_value(max_value, dtype);
 
-    if (set_rand_tensor_data(
-            tensor->data,
-            tensor->total_size,
-            seed,
-            casted_min,
-            casted_max,
-            dtype) != SUCCESS)
+    if (!has_seed) seed = next_random_seed();
+    if (set_rand_tensor_data(tensor->data, tensor->total_size, seed,
+                             casted_min, casted_max, dtype) != SUCCESS)
     {
-
-        CUDA_THROW_RUNTIME("Kernel failed.");
+        if (!EG(exception)) CUDA_THROW_RUNTIME("Uniform random tensor generation failed");
         cuda_tensor_destroy(tensor);
         return NULL;
     }
@@ -488,145 +544,103 @@ tensor_t *cuda_tensor_create_rand(
     return tensor;
 }
 
-static int set_randn_tensor_data(void *data, size_t size, double mean, double std_dev, dtype_t dtype)
+static int set_randn_tensor_data(void *data, size_t size, dtype_t dtype,
+                                 unsigned long long seed)
 {
-    if (size == 0)
-        return SUCCESS;
-
-    if (std_dev == 0.0)
+    if (!size) return SUCCESS;
+    int use_double = dtype == DTYPE_FLOAT64;
+    if (size == SIZE_MAX)
     {
-        scalar_value_t value = {.dtype = dtype, .is_neg = mean < 0.0};
-        if (dtype == DTYPE_FLOAT32)
-            value.v.f32 = (float)mean;
-        else
-            value.v.f64 = mean;
-        launch_assign_scalar_val_kernel(data, dtype, value, size);
-        cudaError_t fill_status = cudaDeviceSynchronize();
-        if (fill_status != cudaSuccess)
-        {
-            CUDA_THROW_RUNTIME("randn fill kernel failed: %s", cudaGetErrorString(fill_status));
-            return FAILURE;
-        }
-        return SUCCESS;
-    }
-
-    curandGenerator_t generator = NULL;
-    void *temporary = NULL;
-    int *invalid = NULL;
-    size_t generated = (size & 1) ? size + 1 : size;
-    size_t element_size = dtype == DTYPE_FLOAT32 ? sizeof(float) : sizeof(double);
-
-    if ((size & 1) && generated > SIZE_MAX / element_size)
-    {
-        CUDA_THROW_INVALID("randn temporary allocation size overflows");
+        CUDA_THROW_INVALID("Normal random tensor is too large");
         return FAILURE;
     }
-    if (size & 1)
+    size_t generated = size + (size & 1);
+    size_t element_size = use_double ? sizeof(double) : sizeof(float);
+    if (generated > SIZE_MAX / element_size)
     {
-        temporary = cuda_mem_alloc(generated * element_size);
-        if (!temporary)
-        {
-            CUDA_THROW_OOM("CUDA Out of Memory: Failed to allocate randn temporary buffer");
-            return FAILURE;
-        }
+        CUDA_THROW_INVALID("Normal random tensor is too large");
+        return FAILURE;
+    }
+    void *temporary = cuda_mem_alloc(generated * element_size);
+    if (!temporary)
+    {
+        CUDA_THROW_OOM("Unable to allocate normal random workspace");
+        return FAILURE;
     }
 
-    invalid = (int *)cuda_mem_alloc(sizeof(*invalid));
+    unsigned int *invalid = (unsigned int *)cuda_mem_alloc(sizeof(*invalid));
     if (!invalid)
     {
-        CUDA_THROW_OOM("CUDA Out of Memory: Failed to allocate randn validation flag");
-        goto failure_cuda;
-    }
-    int invalid_host = 0;
-    cudaError_t flag_status = cudaMemcpy(invalid, &invalid_host, sizeof(invalid_host), cudaMemcpyHostToDevice);
-    if (flag_status != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("randn validation setup failed: %s", cudaGetErrorString(flag_status));
-        goto failure_cuda;
+        cuda_mem_free(temporary);
+        CUDA_THROW_OOM("Unable to allocate normal random validation state");
+        return FAILURE;
     }
 
+    curandGenerator_t generator = NULL;
     curandStatus_t status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
-    if (status != CURAND_STATUS_SUCCESS)
-        goto failure;
-
-    unsigned long long seed = randn_next_seed(data);
-    status = curandSetPseudoRandomGeneratorSeed(generator, seed);
-    if (status != CURAND_STATUS_SUCCESS)
-        goto failure;
-
-    if (dtype == DTYPE_FLOAT32)
+    if (status == CURAND_STATUS_SUCCESS)
+        status = curandSetPseudoRandomGeneratorSeed(generator, seed);
+    if (status == CURAND_STATUS_SUCCESS)
     {
-        float *destination = (float *)(temporary ? temporary : data);
-        status = curandGenerateNormal(generator, destination, generated, (float)mean, (float)std_dev);
-    }
-    else
-    {
-        double *destination = (double *)(temporary ? temporary : data);
-        status = curandGenerateNormalDouble(generator, destination, generated, mean, std_dev);
-    }
-    if (status != CURAND_STATUS_SUCCESS)
-        goto failure;
-
-    cudaError_t validation_status = launch_validate_finite_kernel(
-        temporary ? temporary : data, dtype, generated, invalid);
-    if (validation_status != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("randn finite-value validation failed: %s", cudaGetErrorString(validation_status));
-        goto failure_cuda;
+        status = use_double
+            ? curandGenerateNormalDouble(generator, (double *)temporary, generated, 0.0, 1.0)
+            : curandGenerateNormal(generator, (float *)temporary, generated, 0.0f, 1.0f);
     }
 
-    if (temporary)
-    {
-        cudaError_t copy_status = cudaMemcpy(data, temporary, size * element_size, cudaMemcpyDeviceToDevice);
-        if (copy_status != cudaSuccess)
-        {
-            CUDA_THROW_RUNTIME("randn device copy failed: %s", cudaGetErrorString(copy_status));
-            goto failure_cuda;
-        }
-    }
+    cudaError_t error = cudaSuccess;
+    if (status == CURAND_STATUS_SUCCESS)
+        error = use_double
+            ? launch_scale_normal_double_kernel((double *)temporary, data, 0.0, 1.0, size)
+            : launch_scale_normal_kernel((float *)temporary, data, dtype, 0.0, 1.0, size);
+    if (error == cudaSuccess) error = cudaMemset(invalid, 0, sizeof(*invalid));
+    if (error == cudaSuccess)
+        error = launch_validate_finite(data, dtype, size, invalid);
+    if (error == cudaSuccess) error = cudaDeviceSynchronize();
 
-    cudaError_t generation_status = cudaDeviceSynchronize();
-    if (generation_status != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("randn generation failed: %s", cudaGetErrorString(generation_status));
-        goto failure_cuda;
-    }
-    flag_status = cudaMemcpy(&invalid_host, invalid, sizeof(invalid_host), cudaMemcpyDeviceToHost);
-    if (flag_status != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("randn validation result failed: %s", cudaGetErrorString(flag_status));
-        goto failure_cuda;
-    }
-    if (invalid_host != 0)
-    {
-        CUDA_THROW_RUNTIME("randn generated a non-finite value; reduce mean or std");
-        goto failure_cuda;
-    }
     destroy_curand_generator(generator);
-    if (temporary) cuda_mem_free(temporary);
+    cuda_mem_free(temporary);
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        cuda_mem_free(invalid);
+        CUDA_THROW_RUNTIME("Normal random generation failed (cuRAND error %d)", status);
+        return FAILURE;
+    }
+    if (error != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("Normal random kernel failed: %s", cudaGetErrorString(error));
+        cuda_mem_free(invalid);
+        return FAILURE;
+    }
+
+    unsigned int host_invalid = 0;
+    error = cudaMemcpy(&host_invalid, invalid, sizeof(host_invalid), cudaMemcpyDeviceToHost);
     cuda_mem_free(invalid);
+    if (error != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("Normal random validation failed: %s", cudaGetErrorString(error));
+        return FAILURE;
+    }
+    if (host_invalid)
+    {
+        CUDA_THROW_RUNTIME("Normal random generation produced a non-finite value");
+        return FAILURE;
+    }
     return SUCCESS;
-
-failure:
-    destroy_curand_generator(generator);
-failure_cuda:
-    if (temporary) cuda_mem_free(temporary);
-    if (invalid) cuda_mem_free(invalid);
-    return FAILURE;
 }
 
-tensor_t *cuda_tensor_create_randn(
-    int *shape,
-    int ndims,
-    double mean,
-    double std_dev,
-    dtype_t dtype)
+tensor_t *cuda_tensor_create_randn(int *shape, int ndims, dtype_t dtype,
+                                  unsigned long long seed, int has_seed)
 {
-    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
-    if (!tensor)
+    if (dtype != DTYPE_FLOAT16 && dtype != DTYPE_BFLOAT16 &&
+        dtype != DTYPE_FLOAT32 && dtype != DTYPE_FLOAT64)
+    {
+        CUDA_THROW_INVALID("randn requires a floating-point dtype");
         return NULL;
-
-    if (set_randn_tensor_data(tensor->data, tensor->total_size, mean, std_dev, dtype) != SUCCESS)
+    }
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
+    if (!tensor) return NULL;
+    if (!has_seed) seed = next_random_seed();
+    if (set_randn_tensor_data(tensor->data, tensor->total_size, dtype, seed) != SUCCESS)
     {
         cuda_tensor_destroy(tensor);
         return NULL;
@@ -634,19 +648,16 @@ tensor_t *cuda_tensor_create_randn(
     return tensor;
 }
 
-static int set_random_uniform_tensor_data(
-    void *data,
-    size_t size,
-    double minimum,
-    double maximum,
-    unsigned long long seed,
-    dtype_t dtype)
+static int set_random_uniform_tensor_data(void *data, size_t size,
+                                          double minimum, double maximum,
+                                          unsigned long long seed,
+                                          dtype_t dtype)
 {
-    if (size == 0)
-        return SUCCESS;
+    if (!size) return SUCCESS;
 
     curandGenerator_t generator = NULL;
-    curandStatus_t status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
+    curandStatus_t status = curandCreateGenerator(&generator,
+                                                   CURAND_RNG_PSEUDO_DEFAULT);
     if (status != CURAND_STATUS_SUCCESS)
     {
         CUDA_THROW_RUNTIME("randomUniform generator creation failed");
@@ -661,11 +672,9 @@ static int set_random_uniform_tensor_data(
         return FAILURE;
     }
 
-    if (dtype == DTYPE_FLOAT32)
-        status = curandGenerateUniform(generator, (float *)data, size);
-    else
-        status = curandGenerateUniformDouble(generator, (double *)data, size);
-
+    status = dtype == DTYPE_FLOAT32
+        ? curandGenerateUniform(generator, (float *)data, size)
+        : curandGenerateUniformDouble(generator, (double *)data, size);
     if (status != CURAND_STATUS_SUCCESS)
     {
         CUDA_THROW_RUNTIME("randomUniform generation failed");
@@ -673,41 +682,107 @@ static int set_random_uniform_tensor_data(
         return FAILURE;
     }
 
-    cudaError_t scale_status = launch_scale_uniform_range_kernel(
+    cudaError_t error = launch_scale_uniform_range_kernel(
         data, dtype, size, minimum, maximum);
-    if (scale_status != cudaSuccess)
-    {
-        CUDA_THROW_RUNTIME("randomUniform scaling failed: %s", cudaGetErrorString(scale_status));
-        destroy_curand_generator(generator);
-        return FAILURE;
-    }
-
-    cudaError_t sync_status = cudaDeviceSynchronize();
+    if (error == cudaSuccess) error = cudaDeviceSynchronize();
     destroy_curand_generator(generator);
-    if (sync_status != cudaSuccess)
+    if (error != cudaSuccess)
     {
-        CUDA_THROW_RUNTIME("randomUniform kernel failed: %s", cudaGetErrorString(sync_status));
+        CUDA_THROW_RUNTIME("randomUniform kernel failed: %s",
+                           cudaGetErrorString(error));
         return FAILURE;
     }
     return SUCCESS;
 }
 
 tensor_t *cuda_tensor_create_random_uniform(
-    int *shape,
-    int ndims,
-    double minimum,
-    double maximum,
-    unsigned long long seed,
-    dtype_t dtype)
+    int *shape, int ndims, double minimum, double maximum,
+    unsigned long long seed, dtype_t dtype)
 {
     tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
-    if (!tensor)
-        return NULL;
+    if (!tensor) return NULL;
 
-    if (set_random_uniform_tensor_data(
-            tensor->data, tensor->total_size, minimum, maximum, seed, dtype) != SUCCESS)
+    if (set_random_uniform_tensor_data(tensor->data, tensor->total_size,
+                                       minimum, maximum, seed, dtype) != SUCCESS)
     {
         cuda_tensor_destroy(tensor);
+        return NULL;
+    }
+    return tensor;
+}
+
+tensor_t *cuda_tensor_create_eye(int rows, int columns, int diagonal, dtype_t dtype)
+{
+    if (rows < 0 || columns < 0 || dtype == DTYPE_UNKNOWN || dtype >= DTYPE_COUNT)
+    {
+        CUDA_THROW_INVALID("eye dimensions and dtype are invalid");
+        return NULL;
+    }
+    int shape[] = {rows, columns};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 2, dtype);
+    if (!tensor) return NULL;
+    cudaError_t status = launch_eye(tensor->data, dtype, columns, diagonal,
+                                    tensor->total_size);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("eye kernel failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return tensor;
+}
+
+tensor_t *cuda_tensor_create_arange(int count, dtype_t dtype, double start,
+                                    double step, int exact_integer,
+                                    int64_t integer_start, int64_t integer_step)
+{
+    int shape[] = {count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor) return NULL;
+
+    cudaError_t status = launch_arange(tensor->data, dtype, tensor->total_size,
+                                       start, step, exact_integer,
+                                       integer_start, integer_step);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("arange kernel failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return tensor;
+}
+
+tensor_t *cuda_tensor_create_linspace(int count, dtype_t dtype, double start,
+                                      double stop, int endpoint)
+{
+    int shape[] = {count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor) return NULL;
+
+    cudaError_t status = launch_linspace(tensor->data, dtype, tensor->total_size,
+                                         start, stop, endpoint);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("linspace kernel failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return tensor;
+}
+
+tensor_t *cuda_tensor_create_logspace(int count, dtype_t dtype, double start,
+                                      double stop, double base, int endpoint)
+{
+    int shape[] = {count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor) return NULL;
+
+    cudaError_t status = launch_logspace(tensor->data, dtype, tensor->total_size,
+                                         start, stop, base, endpoint);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("logspace kernel failed: %s", cudaGetErrorString(status));
         return NULL;
     }
     return tensor;
@@ -869,19 +944,26 @@ static cudaError_t cuda_copy_host_buffer_to_gpu(void *gpu_data, const void *host
 
 tensor_t *cuda_tensor_clone(tensor_t *base_tensor)
 {
-    if (base_tensor == NULL)
-    {
-        return NULL;
-    }
+    if (!base_tensor) return NULL;
+    tensor_t *new_tensor = cuda_tensor_create_empty_dtype(
+        base_tensor->shape, base_tensor->ndims, base_tensor->dtype);
+    if (!new_tensor) return NULL;
 
-    tensor_t *new_tensor = cuda_tensor_create(base_tensor->shape, base_tensor->ndims, base_tensor->data, base_tensor->dtype);
-
-    if (new_tensor == NULL || new_tensor->data == NULL)
+    cudaError_t status;
+    if (is_contiguous(base_tensor))
+        status = cudaMemcpy(new_tensor->data, base_tensor->data,
+                            base_tensor->total_size * base_tensor->element_size,
+                            cudaMemcpyDeviceToDevice);
+    else
+        status = launch_pack_strided(base_tensor->data, new_tensor->data,
+                                     base_tensor->total_size, base_tensor->element_size,
+                                     base_tensor->shape, base_tensor->strides,
+                                     base_tensor->ndims);
+    if (status != cudaSuccess)
     {
-        if (new_tensor)
-            cuda_tensor_destroy(new_tensor);
+        cuda_tensor_destroy(new_tensor);
+        CUDA_THROW_RUNTIME("Tensor clone failed: %s", cudaGetErrorString(status));
         return NULL;
     }
     return new_tensor;
 }
-

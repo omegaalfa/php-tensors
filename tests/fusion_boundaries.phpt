@@ -2,13 +2,13 @@
 Fusion plans compile multiple segments together around reductions and matmul
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 ?>
 --FILE--
 <?php
-use Cuda\CudaArray;
-use Cuda\Fusion;
+use PhpTensors\CudaArray;
+use PhpTensors\Fusion;
 $a = new CudaArray([[1, 2], [3, 4]]);
 $b = new CudaArray([[5, 6], [7, 8]]);
 $graph = Fusion::compile(fn($a, $b) => ($a * 2 + 1)->matmul($b) * 3 + 2, [$a, $b]);

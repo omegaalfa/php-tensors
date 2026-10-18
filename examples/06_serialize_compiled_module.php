@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Cuda;
 
-use Cuda\Compiler;
-use Cuda\CudaArray;
-use Cuda\CompiledModule;
+use PhpTensors\Compiler;
+use PhpTensors\CudaArray;
+use PhpTensors\CompiledModule;
 
 /**
  * High-Performance Vector Scaling using JIT Compilation and Caching.

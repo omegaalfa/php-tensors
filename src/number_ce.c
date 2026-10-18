@@ -1,6 +1,8 @@
 #include "php.h"
 #include "number_ce.h"
+#include "backend_contract.h"
 #include "zend_interfaces.h"
+#include <string.h>
 
 static zend_object_handlers number_handlers;
 zend_class_entry *number_ce;
@@ -35,9 +37,11 @@ static zend_result number_do_operation(zend_uchar opcode, zval *result, zval *op
     if (!obj_ptr) return FAILURE;
 
     if (param_count == 2) {
-        zend_call_method_with_2_params(Z_OBJ_P(obj_ptr), Z_OBJCE_P(obj_ptr), NULL, method, result, op1, op2);
+        zend_call_method(Z_OBJ_P(obj_ptr), Z_OBJCE_P(obj_ptr), NULL, method,
+                         strlen(method), result, 2, op1, op2);
     } else {
-        zend_call_method_with_0_params(Z_OBJ_P(obj_ptr), Z_OBJCE_P(obj_ptr), NULL, method, result);
+        zend_call_method(Z_OBJ_P(obj_ptr), Z_OBJCE_P(obj_ptr), NULL, method,
+                         strlen(method), result, 0, NULL, NULL);
     }
 
     return (Z_TYPE_P(result) != IS_UNDEF) ? SUCCESS : FAILURE;
@@ -52,10 +56,11 @@ static zend_object* number_create_object(zend_class_entry *ce) {
 
 void register_number_class() {
     zend_class_entry ce;
-    INIT_CLASS_ENTRY(ce, "Cuda\\Number", number_methods);
+    INIT_CLASS_ENTRY(ce, "PhpTensors\\Number", number_methods);
     number_ce = zend_register_internal_class(&ce);
     number_ce->ce_flags |= ZEND_ACC_ABSTRACT;
     number_ce->create_object = number_create_object;
+    zend_class_implements(number_ce, 1, php_tensors_numbers_ce);
 
     memcpy(&number_handlers, zend_get_std_object_handlers(), sizeof(zend_object_handlers));
     number_handlers.do_operation = number_do_operation;

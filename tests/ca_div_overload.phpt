@@ -2,17 +2,17 @@
 Cuda Array Division overload
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip');
+if (!extension_loaded('phptensors')) die('skip');
 ?>
 --FILE--
 <?php
-$a = new Cuda\CudaArray([4, 1, 2, 3]);
-$b = new Cuda\CudaArray([[4, 1, 2, 3], [6, 7, 8, 9]]);
+$a = new PhpTensors\CudaArray([4, 1, 2, 3]);
+$b = new PhpTensors\CudaArray([[4, 1, 2, 3], [6, 7, 8, 9]]);
 $result = $a / $b;
 var_dump($result->toArray());
 
-$a = new Cuda\CudaArray([[22, 32], [47, 61]]);
-$b = new Cuda\CudaArray([[[4, 1],[ 2, 3]], [[6, 7], [8, 9]]]);
+$a = new PhpTensors\CudaArray([[22, 32], [47, 61]]);
+$b = new PhpTensors\CudaArray([[[4, 1],[ 2, 3]], [[6, 7], [8, 9]]]);
 $result = $a / $b;
 var_dump($result->toArray());
 

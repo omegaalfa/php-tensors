@@ -2,13 +2,13 @@
 cuDNN strict FP32 convolution groups, stride, dilation, padding, bias, pooling and channel softmax
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda') || cuda_get_device_count() < 1) die('skip CUDA GPU required');
-if (!Cuda\NN::isAvailable()) die('skip cuDNN optional backend unavailable');
+if (!extension_loaded('phptensors') || cuda_get_device_count() < 1) die('skip CUDA GPU required');
+if (!cuda_get_backend_info()['cudnn']) die('skip cuDNN optional backend unavailable');
 ?>
 --FILE--
 <?php
-use Cuda\NN;
-use Cuda\CudaArray as A;
+use PhpTensors\NN;
+use PhpTensors\CudaArray as A;
 function close(array $actual, array $expected): void {
     if (count($actual) !== count($expected)) throw new Exception('shape mismatch');
     foreach ($expected as $i => $value) {

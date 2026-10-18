@@ -2,17 +2,17 @@
 CudaArray 2D and batched matrix multiplication
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 ?>
 --FILE--
 <?php
-$a = new Cuda\CudaArray([[1, 2], [3, 4]]);
-$b = new Cuda\CudaArray([[5, 6], [7, 8]]);
+$a = new PhpTensors\CudaArray([[1, 2], [3, 4]]);
+$b = new PhpTensors\CudaArray([[5, 6], [7, 8]]);
 var_dump($a->matmul($b)->toArray());
 
-$a = new Cuda\CudaArray([[[1, 2], [3, 4]], [[2, 0], [1, 2]]]);
-$b = new Cuda\CudaArray([[[5, 6], [7, 8]], [[1, 2], [3, 4]]]);
+$a = new PhpTensors\CudaArray([[[1, 2], [3, 4]], [[2, 0], [1, 2]]]);
+$b = new PhpTensors\CudaArray([[[5, 6], [7, 8]], [[1, 2], [3, 4]]]);
 var_dump($a->matmul($b)->toArray());
 ?>
 --EXPECT--

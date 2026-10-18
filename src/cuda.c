@@ -10,6 +10,7 @@
 #include "cuda_wrapper.h"
 #include "cuda_arginfo.h"
 #include "cuda_array_ce.h"
+#include "tensor_factory.h"
 #include "cuda.h"
 #include "compiler_ce.h"
 #include "module_ce.h"
@@ -20,6 +21,9 @@
 #include "backend_info.h"
 #include "reduction_ops.h"
 #include "nn.h"
+#include "optimizer.h"
+#include "backend_contract.h"
+#include <string.h>
 
 ZEND_DECLARE_MODULE_GLOBALS(cuda);
 
@@ -29,10 +33,16 @@ static size_t parse_size_string(const char *str);
 
 static PHP_INI_MH(OnUpdateMemSize)
 {
+    if (entry && zend_string_equals_literal(entry->name, "cuda.memory_size") &&
+        new_value && ZSTR_LEN(new_value) > 0)
+    {
+        php_error_docref(NULL, E_DEPRECATED,
+                         "cuda.memory_size is deprecated; use phptensors.cuda.memory_pool_size instead.");
+    }
     if (stage == PHP_INI_STAGE_RUNTIME)
     {
         php_error_docref(NULL, E_WARNING,
-                         "Changing cuda.memory_size at runtime (via ini_set) has no effect.");
+                         "Changing the CUDA memory pool size at runtime (via ini_set) has no effect.");
     }
 
     return SUCCESS;
@@ -40,11 +50,19 @@ static PHP_INI_MH(OnUpdateMemSize)
 
 PHP_INI_BEGIN()
 STD_PHP_INI_ENTRY(
-    "cuda.memory_size",
+    "phptensors.cuda.memory_pool_size",
     "3G",
     PHP_INI_ALL,
     OnUpdateMemSize,
     memory_size,
+    zend_cuda_globals,
+    cuda_globals)
+STD_PHP_INI_ENTRY(
+    "cuda.memory_size",
+    "",
+    PHP_INI_ALL,
+    OnUpdateMemSize,
+    legacy_memory_size,
     zend_cuda_globals,
     cuda_globals)
 PHP_INI_END()
@@ -52,6 +70,7 @@ PHP_INI_END()
 static PHP_GINIT_FUNCTION(cuda)
 {
     cuda_globals->memory_size = "3G";
+    cuda_globals->legacy_memory_size = "";
     cuda_globals->fusion_scope = NULL;
     cuda_globals->fusion_cache = NULL;
     cuda_globals->fusion_pending = 0;
@@ -60,9 +79,13 @@ static PHP_GINIT_FUNCTION(cuda)
 PHP_MINIT_FUNCTION(cuda)
 {
     REGISTER_INI_ENTRIES();
-    cuda_register_exceptions();
-
-    const char *ini_value = INI_STR("cuda.memory_size");
+    const char *ini_value = INI_STR("phptensors.cuda.memory_pool_size");
+    const char *legacy_ini_value = INI_STR("cuda.memory_size");
+    if (legacy_ini_value && legacy_ini_value[0] &&
+        (!ini_value || strcmp(ini_value, "3G") == 0))
+    {
+        ini_value = legacy_ini_value;
+    }
     size_t pool_size = parse_size_string(ini_value);
 
     int count = cuda_wrapper_get_device_count();
@@ -71,14 +94,22 @@ PHP_MINIT_FUNCTION(cuda)
         php_error_docref(NULL, E_WARNING, "CUDA initialization failed");
     }
 
+    if (php_tensors_backend_contract_init() != SUCCESS)
+    {
+        return FAILURE;
+    }
+    cuda_register_exceptions();
     register_number_class();
     compiler_init();
     module_init();
     contiguous_array_init();
     fusion_init();
     cuda_nn_init();
-
     if (!cuda_array_init(pool_size))
+    {
+        return FAILURE;
+    }
+    if (cuda_optimizer_init() != SUCCESS)
     {
         return FAILURE;
     }
@@ -110,7 +141,7 @@ ZEND_FUNCTION(cuda_get_backend_info)
     add_assoc_bool(return_value, "cublasLt", info.cublas_lt);
     add_assoc_bool(return_value, "cub", 1);
     add_assoc_bool(return_value, "cudnn", cuda_nn_available());
-    add_assoc_string(return_value, "precision", "fp32-strict");
+    add_assoc_string(return_value, "precision", (char *)info.precision);
     add_assoc_string(return_value, "lastMatmul", info.last_matmul);
     add_assoc_long(return_value, "lastBlasStatus", info.last_blas_status);
     add_assoc_long(return_value, "cublasCalls", info.blas_calls);
@@ -119,6 +150,143 @@ ZEND_FUNCTION(cuda_get_backend_info)
     add_assoc_long(return_value, "cubReductionCalls", info.cub_calls);
     add_assoc_long(return_value, "coalescedReductionCalls", info.axis_calls);
     add_assoc_long(return_value, "genericReductionCalls", info.generic_reduce_calls);
+}
+
+ZEND_FUNCTION(cuda_set_matmul_precision)
+{
+    zend_string *precision;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+    Z_PARAM_STR(precision)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (!fusion_check_mutation()) RETURN_THROWS();
+
+    int mode;
+    if (zend_string_equals_literal(precision, "fp32-strict"))
+    {
+        mode = CUDA_MATMUL_PRECISION_FP32_STRICT;
+    }
+    else if (zend_string_equals_literal(precision, "tf32"))
+    {
+        cuda_backend_info info = {0};
+        cuda_blas_info(&info);
+        if (!info.cublas)
+        {
+            CUDA_THROW_RUNTIME("TF32 matmul precision requires a cuBLAS-enabled build");
+            RETURN_THROWS();
+        }
+
+        int device = cuda_wrapper_get_current_device();
+        char name[256];
+        int major, minor;
+        size_t total_mem;
+        if (device < 0 || cuda_wrapper_get_device_properties(
+                device, name, sizeof(name), &major, &minor, &total_mem) != 1)
+        {
+            CUDA_THROW_RUNTIME("Failed to query the current CUDA device for TF32 support");
+            RETURN_THROWS();
+        }
+        if (major < 8)
+        {
+            CUDA_THROW_RUNTIME("TF32 matmul precision requires compute capability 8.0 or newer");
+            RETURN_THROWS();
+        }
+        mode = CUDA_MATMUL_PRECISION_TF32;
+    }
+    else
+    {
+        CUDA_THROW_INVALID("Matmul precision must be 'fp32-strict' or 'tf32'");
+        RETURN_THROWS();
+    }
+
+    if (!cuda_blas_set_precision(mode))
+    {
+        CUDA_THROW_RUNTIME("Failed to set matmul precision");
+        RETURN_THROWS();
+    }
+    RETURN_NULL();
+}
+
+ZEND_FUNCTION(cuda_tune_matmul)
+{
+    zval *left_value, *right_value;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+    Z_PARAM_OBJECT_OF_CLASS(left_value, cuda_array_ce)
+    Z_PARAM_OBJECT_OF_CLASS(right_value, cuda_array_ce)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (fusion_active())
+    {
+        CUDA_THROW_INVALID("Matmul autotuning must run outside Fusion capture");
+        RETURN_THROWS();
+    }
+
+    cuda_array_obj *left_object = php_cuda_array_fetch_valid_object(Z_OBJ_P(left_value));
+    cuda_array_obj *right_object = php_cuda_array_fetch_valid_object(Z_OBJ_P(right_value));
+    if (!left_object || !right_object) RETURN_THROWS();
+
+    tensor_t *left = left_object->tensor_handle;
+    tensor_t *right = right_object->tensor_handle;
+    if (!left || !right || left->dtype != DTYPE_FLOAT32 || right->dtype != DTYPE_FLOAT32)
+    {
+        CUDA_THROW_INVALID("Matmul autotuning currently requires valid float32 tensors");
+        RETURN_THROWS();
+    }
+    if (left->ndims != 2 || right->ndims != 2 ||
+        left->shape[1] != right->shape[0])
+    {
+        CUDA_THROW_INVALID("Matmul autotuning currently requires compatible 2D tensors");
+        RETURN_THROWS();
+    }
+
+    tensor_t *output = cuda_tensor_create_empty((int[]){left->shape[0], right->shape[1]}, 2);
+    if (!output) RETURN_THROWS();
+
+    cudaError_t sync_status = cudaDeviceSynchronize();
+    if (sync_status != cudaSuccess)
+    {
+        cuda_tensor_destroy(output);
+        CUDA_THROW_RUNTIME("Failed to synchronize before matmul autotuning: %s",
+                           cudaGetErrorString(sync_status));
+        RETURN_THROWS();
+    }
+
+    cuda_matmul_tuning_result result = {};
+    int status = cuda_blas_tune_matmul(
+        left->data, right->data, output->data, left->shape[0], left->shape[1], right->shape[1],
+        left->strides[0], left->strides[1], right->strides[0], right->strides[1], NULL, &result);
+    cuda_tensor_destroy(output);
+    if (status < 0)
+    {
+        cuda_backend_info info = {0};
+        cuda_blas_info(&info);
+        CUDA_THROW_RUNTIME("Matmul autotuning failed (cuBLAS status %d)", info.last_blas_status);
+        RETURN_THROWS();
+    }
+    if (status == 0)
+    {
+        CUDA_THROW_INVALID("Matmul autotuning requires cuBLASLt, compatible strides, and at least 10 million operations");
+        RETURN_THROWS();
+    }
+
+    array_init(return_value);
+    add_assoc_string(return_value, "backend", "cublasLt");
+    add_assoc_string(return_value, "precision", (char *)cuda_blas_precision_name());
+    add_assoc_long(return_value, "selectedCandidate", result.selected_candidate);
+    add_assoc_long(return_value, "candidateCount", result.candidate_count);
+    zval candidates;
+    array_init(&candidates);
+    for (int i = 0; i < result.candidate_count; i++)
+    {
+        zval candidate;
+        array_init(&candidate);
+        add_assoc_long(&candidate, "algorithmId", result.candidates[i].algorithm_id);
+        add_assoc_long(&candidate, "workspaceBytes", (zend_long)result.candidates[i].workspace_bytes);
+        add_assoc_double(&candidate, "medianMs", result.candidates[i].median_ms);
+        add_assoc_bool(&candidate, "selected", i == result.selected_candidate);
+        add_next_index_zval(&candidates, &candidate);
+    }
+    add_assoc_zval(return_value, "candidates", &candidates);
 }
 
 ZEND_FUNCTION(cuda_get_device_info)
@@ -306,6 +474,8 @@ ZEND_FUNCTION(cuda_get_peer_access)
 
 static zend_function_entry cuda_functions[] = {
     PHP_FE(cuda_get_backend_info, arginfo_cuda_get_backend_info)
+        PHP_FE(cuda_set_matmul_precision, arginfo_cuda_set_matmul_precision)
+        PHP_FE(cuda_tune_matmul, arginfo_cuda_tune_matmul)
     PHP_FE(cuda_get_device_count, arginfo_cuda_get_device_count)
         PHP_FE(cuda_get_device_info, arginfo_cuda_get_device_info)
             PHP_FE(cuda_set_device, arginfo_cuda_set_device)
@@ -334,26 +504,22 @@ PHP_RSHUTDOWN_FUNCTION(cuda)
 {
     fusion_request_shutdown();
     cuda_blas_shutdown();
+    cuda_blas_set_precision(CUDA_MATMUL_PRECISION_FP32_STRICT);
     cuda_reduction_shutdown();
     cuda_nn_shutdown();
     return SUCCESS;
 }
 
-PHP_RINIT_FUNCTION(cuda)
-{
-    return SUCCESS;
-}
-
-zend_module_entry cuda_module_entry = {
+zend_module_entry phptensors_module_entry = {
     STANDARD_MODULE_HEADER,
-    PHP_CUDA_EXTNAME,
+    PHP_PHPTENSORS_EXTNAME,
     cuda_functions,
     PHP_MINIT(cuda),
     PHP_MSHUTDOWN(cuda),
-    PHP_RINIT(cuda),
+    NULL,
     PHP_RSHUTDOWN(cuda),
     NULL,
-    PHP_CUDA_VERSION,
+    PHP_PHPTENSORS_VERSION,
     PHP_MODULE_GLOBALS(cuda),
     PHP_GINIT(cuda),
     NULL,
@@ -381,6 +547,6 @@ static size_t parse_size_string(const char *str)
     }
 }
 
-#ifdef COMPILE_DL_CUDA
-ZEND_GET_MODULE(cuda)
+#ifdef COMPILE_DL_PHPTENSORS
+ZEND_GET_MODULE(phptensors)
 #endif

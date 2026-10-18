@@ -1,13 +1,18 @@
 #include "fusion_internal.h"
+#include "reduction_ops.h"
 int fusion_inline(tensor_t *tensor)
 {
     fusion_node *node = tensor->fusion;
     if (!node) return 0;
     if (node->kind == FUSION_UNARY || node->kind == FUSION_CAST ||
-        node->kind == FUSION_WHERE || node->kind == FUSION_VIEW) return 1;
+        node->kind == FUSION_WHERE || node->kind == FUSION_VIEW ||
+        node->kind == FUSION_SLICE_SCATTER ||
+        node->kind == FUSION_TRANSFORM) return 1;
     return (node->kind == FUSION_BINARY || node->kind == FUSION_SCALAR) &&
         (node->op == OP_ADD || node->op == OP_SUB || node->op == OP_MUL ||
-         node->op == OP_DIV || (node->op >= OP_GT && node->op <= OP_LE));
+         node->op == OP_DIV || node->op == OP_MAXIMUM || node->op == OP_MINIMUM ||
+         (node->op >= OP_GT && node->op <= OP_LE) ||
+         (node->op == OP_POW && dtype_is_floating(tensor->dtype)));
 }
 
 size_t fusion_find(fusion_plan *plan, tensor_t *tensor)
@@ -20,7 +25,15 @@ size_t fusion_find(fusion_plan *plan, tensor_t *tensor)
 int fusion_preallocated(fusion_plan *plan, fusion_step *step)
 {
     fusion_kind kind = plan->items[step->root].tensor->fusion->kind;
-    return step->name[0] || kind == FUSION_MATMUL || kind == FUSION_REDUCE || kind == FUSION_ARG_REDUCE;
+    fusion_node *node = plan->items[step->root].tensor->fusion;
+    return step->name[0] || (kind == FUSION_CAST &&
+        (node->a->dtype == DTYPE_FLOAT16 || node->a->dtype == DTYPE_BFLOAT16)) ||
+        kind == FUSION_MATMUL || kind == FUSION_REDUCE ||
+        kind == FUSION_ARG_REDUCE || kind == FUSION_SCAN ||
+        kind == FUSION_GATHER ||
+        kind == FUSION_SCATTER_ADD || kind == FUSION_CONCAT ||
+        kind == FUSION_REPEAT_COUNTS || kind == FUSION_REPEAT_COUNTS_BACKWARD ||
+        kind == FUSION_TRANSFORM_BACKWARD || kind == FUSION_SCAN_BACKWARD;
 }
 
 static size_t fusion_collect(fusion_plan *plan, tensor_t *tensor)
@@ -41,7 +54,10 @@ static size_t fusion_collect(fusion_plan *plan, tensor_t *tensor)
         {
             int cost = node->kind == FUSION_UNARY ? 4 :
                        node->kind == FUSION_WHERE ? 3 :
-                       node->kind == FUSION_VIEW ? 2 : 1;
+                       node->kind == FUSION_SLICE_SCATTER ? 4 :
+                       node->kind == FUSION_TRANSFORM ? 4 :
+                       node->kind == FUSION_VIEW ? 2 :
+                       node->op == OP_POW ? 7 : 1;
             if (tensor->dtype == DTYPE_FLOAT64) cost *= 2;
             if (a != SIZE_MAX && !plan->items[a].cut) cost += plan->items[a].cost;
             if (b != SIZE_MAX && !plan->items[b].cut) cost += plan->items[b].cost;
@@ -55,7 +71,8 @@ static size_t fusion_collect(fusion_plan *plan, tensor_t *tensor)
                         plan->items[children[i]].cut = 1;
                         plan->items[children[i]].reason = "expression-cost";
                     }
-                cost = node->kind == FUSION_UNARY ? 4 : 1;
+                cost = node->kind == FUSION_UNARY ? 4 :
+                    node->op == OP_POW ? 7 : 1;
             }
             plan->items[id].cost = cost;
         }
@@ -63,10 +80,19 @@ static size_t fusion_collect(fusion_plan *plan, tensor_t *tensor)
         {
             plan->items[id].cut = 1;
             plan->items[id].reason = node->kind == FUSION_MATMUL ? "native-matmul" :
+                node->kind == FUSION_CAST ? "native-low-precision-cast" :
                 node->kind == FUSION_REDUCE || node->kind == FUSION_ARG_REDUCE ? "native-reduction" :
+                node->kind == FUSION_SCAN ? "native-cumulative-scan" :
+                node->kind == FUSION_REPEAT_COUNTS ? "native-repeat-counts" :
+                node->kind == FUSION_REPEAT_COUNTS_BACKWARD ? "native-repeat-count-gradient" :
+                node->kind == FUSION_GATHER || node->kind == FUSION_SCATTER_ADD ? "native-indexed" :
+                node->kind == FUSION_CONCAT ? "native-concat" :
+                node->kind == FUSION_TRANSFORM_BACKWARD ? "native-transform-gradient" :
+                node->kind == FUSION_SCAN_BACKWARD ? "native-cumulative-gradient" :
                 "native-power";
             if (a != SIZE_MAX && plan->items[a].cost) plan->items[a].cut = 1;
             if (b != SIZE_MAX && plan->items[b].cost) plan->items[b].cut = 1;
+            if (c != SIZE_MAX && plan->items[c].cost) plan->items[c].cut = 1;
         }
     }
     return id;
@@ -119,9 +145,24 @@ void fusion_plan_free(fusion_plan *plan)
         if (context_error != CUDA_SUCCESS) pushed = 0;
     }
     fusion_cleanup_error("Selecting module context", context_error);
+    if (plan->indexed_validation_error)
+    {
+        cudaError_t status = cudaFree(plan->indexed_validation_error);
+        if (status != cudaSuccess)
+            php_error_docref(NULL, E_WARNING,
+                             "Releasing Fusion index validation status failed: %s",
+                             cudaGetErrorString(status));
+    }
     if (plan->graph_exec) fusion_cleanup_error("Destroying graph executable", cuGraphExecDestroy(plan->graph_exec));
     if (plan->cuda_graph) fusion_cleanup_error("Destroying CUDA graph", cuGraphDestroy(plan->cuda_graph));
     if (plan->graph_nodes) efree(plan->graph_nodes);
+    if (plan->graph_capture_stream)
+    {
+        cudaError_t error = cuda_reduction_release_stream((cudaStream_t)plan->graph_capture_stream);
+        if (error != cudaSuccess)
+            php_error_docref(NULL, E_WARNING, "Releasing graph reduction workspace failed: %s", cudaGetErrorString(error));
+        fusion_cleanup_error("Destroying graph capture stream", cuStreamDestroy(plan->graph_capture_stream));
+    }
     if (plan->sync_stream) fusion_cleanup_error("Destroying replay stream", cuStreamDestroy(plan->sync_stream));
     if (plan->sync_ready) fusion_cleanup_error("Destroying replay readiness event", cuEventDestroy(plan->sync_ready));
     if (plan->module)
@@ -240,7 +281,8 @@ fusion_plan *fusion_build_plan(tensor_t **roots, size_t root_count)
             if (consumer->a != i && consumer->b != i && consumer->c != i) continue;
             fusion_node *operation = consumer->tensor->fusion;
             if (!operation || (operation->kind != FUSION_MATMUL &&
-                operation->kind != FUSION_REDUCE && operation->kind != FUSION_ARG_REDUCE))
+                operation->kind != FUSION_REDUCE && operation->kind != FUSION_ARG_REDUCE &&
+                operation->kind != FUSION_CONCAT))
                 compatible = 0;
             if (operation && (operation->kind == FUSION_REDUCE || operation->kind == FUSION_ARG_REDUCE) &&
                 operation->parameter == -1 && !is_contiguous(item->tensor))
@@ -258,7 +300,47 @@ fusion_plan *fusion_build_plan(tensor_t **roots, size_t root_count)
         if (!plan->steps[i].name[0] && !plan->items[plan->steps[i].root].alias)
         {
             plan->native_steps++;
-            plan->graph_compatible = 0;
+            fusion_kind kind = plan->items[plan->steps[i].root].tensor->fusion->kind;
+            fusion_node *node = plan->items[plan->steps[i].root].tensor->fusion;
+            int scan_stream_compatible = kind == FUSION_SCAN &&
+                is_contiguous(node->a) &&
+                (node->parameter == -1 ||
+                 node->parameter == node->a->ndims - 1);
+            if (kind != FUSION_MATMUL && kind != FUSION_REDUCE &&
+                kind != FUSION_ARG_REDUCE && kind != FUSION_TRANSFORM_BACKWARD &&
+                !scan_stream_compatible)
+                plan->graph_compatible = 0;
+            if (kind == FUSION_GATHER || kind == FUSION_SCATTER_ADD)
+            {
+                plan->stream_compatible = 0;
+                plan->incompatibility = "indexed-operation";
+            }
+            if (kind == FUSION_SCAN && !scan_stream_compatible)
+            {
+                plan->stream_compatible = 0;
+                plan->incompatibility = "cumulative-scan-layout";
+            }
+            if (kind == FUSION_REPEAT_COUNTS)
+            {
+                plan->stream_compatible = 0;
+                plan->incompatibility = "repeat-counts";
+            }
+            if (kind == FUSION_REPEAT_COUNTS_BACKWARD)
+            {
+                plan->stream_compatible = 0;
+                plan->incompatibility = "repeat-count-gradient";
+            }
+            if (kind == FUSION_SCAN_BACKWARD)
+            {
+                plan->stream_compatible = 0;
+                plan->incompatibility = "cumulative-gradient";
+            }
+            if (kind == FUSION_CONCAT || kind == FUSION_CAST)
+            {
+                plan->stream_compatible = 0;
+                plan->incompatibility = kind == FUSION_CAST
+                    ? "low-precision-cast" : "concat-operation";
+            }
             if (!fusion_preallocated(plan, &plan->steps[i]))
             {
                 plan->stream_compatible = 0;

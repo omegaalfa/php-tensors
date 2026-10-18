@@ -2,13 +2,13 @@
 Fusion private streams retain inputs and support concurrent executions and repeated waits
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 ?>
 --FILE--
 <?php
-use Cuda\CudaArray;
-use Cuda\Fusion;
+use PhpTensors\CudaArray;
+use PhpTensors\Fusion;
 function check(bool $ok): void { if (!$ok) throw new RuntimeException('check failed'); }
 $a = new CudaArray([1, 2, 3]);
 $b = new CudaArray([4, 5, 6]);
@@ -18,9 +18,9 @@ $second = $graph->runAsync($b, $b);
 check($graph->getStats()['pending'] === 2);
 check(is_bool($first->isFinished()));
 try { $a[0] = 9; echo "MISSED\n"; }
-catch (Cuda\RuntimeException $error) { echo "mutation blocked\n"; }
+catch (PhpTensors\RuntimeException $error) { echo "mutation blocked\n"; }
 try { cuda_device_reset(); echo "MISSED\n"; }
-catch (Cuda\RuntimeException $error) { echo "reset blocked\n"; }
+catch (PhpTensors\RuntimeException $error) { echo "reset blocked\n"; }
 $expectedFirst = ($a * $b + 1)->sqrt()->toArray();
 $expectedSecond = ($b * $b + 1)->sqrt()->toArray();
 unset($a, $b);
@@ -39,16 +39,17 @@ $a[0] = 7;
 check($a->toArray()[0] === 7.0);
 echo "destruction waited\n";
 $native = Fusion::compile(fn($x) => ($x + 1)->sum() * 2, [$a], cudaGraph: true);
-check($native->getStats()['backend'] === 'stream');
+check($native->getStats()['backend'] === 'cuda-graph');
 check($native->getStats()['incompatibility'] === null);
-check($native->getStats()['cudaGraphIncompatibility'] === 'native-graph-not-supported');
+check($native->getStats()['cudaGraphIncompatibility'] === null);
 check($native->runAsync($a)->wait()->toArray() === [34.0]);
 echo "native async completed\n";
 check($native->run($a)->toArray() === [34.0]);
 echo "native replay preserved\n";
 $power = Fusion::compile(fn($x) => $x->power(2) + 1, [$a]);
-try { $power->runAsync($a); echo "MISSED\n"; }
-catch (Cuda\RuntimeException $error) { echo "unsupported power async rejected\n"; }
+$powerResult = $power->runAsync($a)->wait()->toArray();
+check($powerResult === ($a->power(2) + 1)->toArray());
+echo "fused power async completed\n";
 ?>
 --EXPECT--
 mutation blocked
@@ -57,4 +58,4 @@ concurrent replay completed
 destruction waited
 native async completed
 native replay preserved
-unsupported power async rejected
+fused power async completed

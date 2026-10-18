@@ -4,6 +4,7 @@
 #include "php.h"
 #include "tensor.h"
 #include "operations.h"
+#include "tensor_transform.h"
 
 struct fusion_scope;
 struct fusion_node;
@@ -21,10 +22,29 @@ tensor_t *fusion_cast(tensor_t *a, dtype_t dtype);
 tensor_t *fusion_cast_eager(tensor_t *a, dtype_t dtype);
 tensor_t *fusion_where(tensor_t *condition, tensor_t *x, tensor_t *y);
 tensor_t *fusion_reduce(tensor_t *a, int axis, operation_type_t op, int arg);
+tensor_t *fusion_scan(tensor_t *a, int axis, operation_type_t op);
 tensor_t *fusion_matmul(tensor_t *a, tensor_t *b);
+tensor_t *fusion_indexed_gather(tensor_t *input, tensor_t *indices, int axis);
+tensor_t *fusion_indexed_scatter_add(tensor_t *input, tensor_t *indices,
+                                     tensor_t *updates, int axis);
+tensor_t *fusion_concat(tensor_t **inputs, size_t input_count, int axis);
+tensor_t *fusion_transform(tensor_t *a, const tensor_transform_spec_t *spec);
+tensor_t *fusion_transform_backward(tensor_t *upstream,
+                                    const tensor_transform_spec_t *spec);
+tensor_t *fusion_repeat_counts(tensor_t *a, const int *prefix_counts,
+                               size_t count, int axis,
+                               const int *output_shape, int output_ndims);
+tensor_t *fusion_repeat_counts_backward(tensor_t *upstream,
+                                        const int *prefix_counts, size_t count,
+                                        int axis, const int *input_shape,
+                                        int input_ndims);
+tensor_t *fusion_scan_backward(tensor_t *input, tensor_t *upstream, int axis);
 tensor_t *fusion_view(tensor_t *a, operation_type_t op, int *shape, size_t *strides, int ndims, int *axes);
 tensor_t *fusion_slice(tensor_t *a, int *shape, size_t *strides, int ndims,
                        int *axes, int *starts, int *steps);
+tensor_t *fusion_slice_scatter(tensor_t *updates, const int *input_shape,
+                               int input_ndims, const int *axes,
+                               const int *starts, const int *steps);
 void fusion_request_shutdown(void);
 
 #endif

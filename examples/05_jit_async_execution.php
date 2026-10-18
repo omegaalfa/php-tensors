@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use Cuda\Compiler;
-use Cuda\CudaArray;
+use PhpTensors\Compiler;
+use PhpTensors\CudaArray;
 
 /**
  * Asynchronous Kernel Execution

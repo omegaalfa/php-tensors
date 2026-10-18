@@ -23,13 +23,14 @@ tensor_t *cuda_tensor_create_rand(
     scalar_value_t min_value,
     scalar_value_t max_value,
     dtype_t dtype,
-    unsigned long long seed);
+    unsigned long long seed,
+    int has_seed);
 tensor_t *cuda_tensor_create_randn(
     int *shape,
     int ndims,
-    double mean,
-    double std_dev,
-    dtype_t dtype);
+    dtype_t dtype,
+    unsigned long long seed,
+    int has_seed);
 tensor_t *cuda_tensor_create_random_uniform(
     int *shape,
     int ndims,
@@ -37,6 +38,14 @@ tensor_t *cuda_tensor_create_random_uniform(
     double maximum,
     unsigned long long seed,
     dtype_t dtype);
+tensor_t *cuda_tensor_create_eye(int rows, int columns, int diagonal, dtype_t dtype);
+tensor_t *cuda_tensor_create_arange(int count, dtype_t dtype, double start,
+                                    double step, int exact_integer,
+                                    int64_t integer_start, int64_t integer_step);
+tensor_t *cuda_tensor_create_linspace(int count, dtype_t dtype, double start,
+                                      double stop, int endpoint);
+tensor_t *cuda_tensor_create_logspace(int count, dtype_t dtype, double start,
+                                      double stop, double base, int endpoint);
 
 tensor_t *cuda_tensor_create_scalar(float value, int *shape, int ndims);
 tensor_t *cuda_tensor_create_empty(const int shape[], int ndims);

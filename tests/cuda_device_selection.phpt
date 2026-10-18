@@ -2,7 +2,7 @@
 CUDA device selection applies and rejects invalid devices
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 try {
     if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 } catch (Throwable $error) {
@@ -19,7 +19,7 @@ var_dump(cuda_get_current_device() === $target_device);
 try {
     cuda_set_device($device_count);
     echo "invalid device accepted\n";
-} catch (Cuda\RuntimeException $error) {
+} catch (PhpTensors\RuntimeException $error) {
     echo "invalid device rejected\n";
 }
 var_dump(cuda_get_current_device() === $target_device);

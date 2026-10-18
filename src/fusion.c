@@ -1,8 +1,11 @@
 #include "fusion_internal.h"
+#include "autograd.h"
 #include "cuda_array_ce.h"
 #include "reduction_ops.h"
 #include "zend_interfaces.h"
 #include "zend_fibers.h"
+#include "factory_kernels.h"
+#include "tensor_factory.h"
 #include <time.h>
 
 typedef struct
@@ -91,11 +94,17 @@ static int fusion_materialize_roots(tensor_t **roots, size_t count)
             if (!values[i] || values[i] == target) continue;
             tensor_t *result = values[i];
             int references = target->ref_count + result->ref_count - 1;
+            struct autograd_node *grad_fn = target->grad_fn;
+            tensor_t *gradient = target->grad;
+            int requires_grad = target->requires_grad;
             fusion_release_node(target);
             if (target->shape) efree(target->shape);
             if (target->strides) efree(target->strides);
             *target = *result;
             target->ref_count = references;
+            target->grad_fn = grad_fn;
+            target->grad = gradient;
+            target->requires_grad = requires_grad;
             efree(result);
             values[i] = target;
         }
@@ -109,6 +118,35 @@ static int fusion_materialize_roots(tensor_t **roots, size_t count)
 tensor_t *fusion_cast_eager(tensor_t *a, dtype_t dtype)
 {
     if (!fusion_materialize(a)) return NULL;
+    if (a->dtype == DTYPE_FLOAT16 || a->dtype == DTYPE_BFLOAT16 ||
+        dtype == DTYPE_FLOAT16 || dtype == DTYPE_BFLOAT16)
+    {
+        tensor_t *result = cuda_tensor_create_empty_with_dtype(a->shape, a->ndims, dtype);
+        if (!result) return NULL;
+        tensor_t *packed = is_contiguous(a) ? NULL : cuda_tensor_clone(a);
+        if (!is_contiguous(a) && !packed)
+        {
+            cuda_tensor_destroy(result);
+            return NULL;
+        }
+        cudaError_t status = launch_tensor_cast(packed ? packed->data : a->data,
+                                                result->data, a->dtype,
+                                                dtype, a->total_size);
+        if (packed) cuda_tensor_destroy(packed);
+        if (status != cudaSuccess)
+        {
+            cuda_tensor_destroy(result);
+            CUDA_THROW_RUNTIME("Low-precision dtype conversion failed: %s",
+                               cudaGetErrorString(status));
+            return NULL;
+        }
+        if (!autograd_record_cast(result, a))
+        {
+            cuda_tensor_destroy(result);
+            return NULL;
+        }
+        return result;
+    }
     fusion_scope *scope = ecalloc(1, sizeof(fusion_scope));
     CUDA_G(fusion_scope) = scope;
     tensor_t *result = fusion_cast(a, dtype);
@@ -313,6 +351,7 @@ ZEND_METHOD(Fusion, compile)
             memcpy(placeholder->strides, example->strides, example->ndims * sizeof(size_t));
         placeholder->is_contiguous_cached = -1;
         placeholder->fusion->parameter = (int)initialized;
+        placeholder->requires_grad = example->requires_grad;
         input_tensors[initialized] = placeholder;
         fusion_wrap(&arguments[initialized++], placeholder);
     }
@@ -811,13 +850,13 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_fusion_run, 0, 1, IS_MIXED, 0)
     ZEND_ARG_TYPE_INFO(0, callback, IS_CALLABLE, 0)
     ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, enabled, _IS_BOOL, 0, "true")
 ZEND_END_ARG_INFO()
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_fusion_compile, 0, 2, Cuda\\FusionGraph, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_fusion_compile, 0, 2, PhpTensors\\FusionGraph, 0)
     ZEND_ARG_TYPE_INFO(0, callback, IS_CALLABLE, 0)
     ZEND_ARG_TYPE_INFO(0, inputs, IS_ARRAY, 0)
     ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, cudaGraph, _IS_BOOL, 0, "false")
 ZEND_END_ARG_INFO()
-ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_fusion_graph_async, 0, 0, Cuda\\FusionExecution, 0)
-    ZEND_ARG_VARIADIC_OBJ_INFO(0, inputs, Cuda\\CudaArray, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(arginfo_fusion_graph_async, 0, 0, PhpTensors\\FusionExecution, 0)
+    ZEND_ARG_VARIADIC_OBJ_INFO(0, inputs, PhpTensors\\CudaArray, 0)
 ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_fusion_wait, 0, 0, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
@@ -829,7 +868,7 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_fusion_profiling, 0, 1, IS_VOID,
     ZEND_ARG_TYPE_INFO(0, enabled, _IS_BOOL, 0)
 ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_fusion_graph_run, 0, 0, IS_MIXED, 0)
-    ZEND_ARG_VARIADIC_OBJ_INFO(0, inputs, Cuda\\CudaArray, 0)
+    ZEND_ARG_VARIADIC_OBJ_INFO(0, inputs, PhpTensors\\CudaArray, 0)
 ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_fusion_stats, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
@@ -864,10 +903,10 @@ static const zend_function_entry fusion_execution_methods[] = {
 int fusion_init(void)
 {
     zend_class_entry ce;
-    INIT_CLASS_ENTRY(ce, "Cuda\\Fusion", fusion_methods);
+    INIT_CLASS_ENTRY(ce, "PhpTensors\\Fusion", fusion_methods);
     fusion_ce = zend_register_internal_class(&ce);
     fusion_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
-    INIT_CLASS_ENTRY(ce, "Cuda\\FusionGraph", fusion_graph_methods);
+    INIT_CLASS_ENTRY(ce, "PhpTensors\\FusionGraph", fusion_graph_methods);
     fusion_graph_ce = zend_register_internal_class(&ce);
     fusion_graph_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
     fusion_graph_ce->create_object = fusion_graph_create;
@@ -876,7 +915,7 @@ int fusion_init(void)
     fusion_graph_handlers.free_obj = fusion_graph_free;
     fusion_graph_handlers.get_gc = fusion_graph_gc;
     fusion_graph_handlers.clone_obj = NULL;
-    INIT_CLASS_ENTRY(ce, "Cuda\\FusionExecution", fusion_execution_methods);
+    INIT_CLASS_ENTRY(ce, "PhpTensors\\FusionExecution", fusion_execution_methods);
     fusion_execution_ce = zend_register_internal_class(&ce);
     fusion_execution_ce->ce_flags |= ZEND_ACC_FINAL | ZEND_ACC_NOT_SERIALIZABLE;
     fusion_execution_ce->create_object = fusion_execution_create;

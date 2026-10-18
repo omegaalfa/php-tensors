@@ -1,12 +1,43 @@
 <?php
 
-namespace Cuda;
+namespace PhpTensors;
 
-/** Optional synchronous cuDNN inference. NCHW inputs, OIHW filters, contiguous FP32; no Fusion capture. */
+class Exception extends \Exception {}
+class InvalidArgumentException extends Exception {}
+class RuntimeException extends Exception {}
+class UnexpectedValueException extends Exception {}
+class OutOfMemoryException extends RuntimeException {}
+class CompilationException extends RuntimeException {}
+
+interface Numbers {}
+
+interface Tensor
+{
+    public function getBackend(): string;
+    public function getShape(): array;
+    public function getSize(): int;
+    public function dtype(): string;
+    public function toArray(): array;
+}
+
+interface BackendInterface
+{
+    public function getName(): string;
+    public function isAvailable(): bool;
+    public function supports(string $operation, array $context = []): bool;
+    public function createTensor(array $values, array $shape, ?string $dtype = 'float32'): Tensor;
+    public function execute(string $operation, array $inputs, array $arguments = []): Tensor;
+}
+
+namespace PhpTensors;
+
+/**
+ * Synchronous CUDA inference for contiguous FP32 tensors. Uses cuDNN when
+ * available and native CUDA kernels otherwise; never falls back to CPU.
+ */
 final class NN
 {
     private function __construct() {}
-    public static function isAvailable(): bool {}
     /** Cross-correlation, floor output dimensions, optional bias per output channel. */
     public static function conv2d(CudaArray $input, CudaArray $weights, ?CudaArray $bias = null,
         array $stride = [1, 1], array $padding = [0, 0], array $dilation = [1, 1], int $groups = 1): CudaArray {}
@@ -17,16 +48,7 @@ final class NN
     public static function softmax(CudaArray $input): CudaArray {}
 }
 
-/** Base error from the CUDA extension. */
-class Exception extends \Exception {}
-/** Device or kernel operation failed. */
-class RuntimeException extends Exception {}
-/** Invalid shape, dtype, axis, or other caller input. */
-class InvalidArgumentException extends Exception {}
-/** Device or host tensor allocation failed. */
-class OutOfMemoryException extends RuntimeException {}
-/** NVRTC compilation failed. */
-class CompilationException extends RuntimeException {}
+namespace PhpTensors;
 
 /** Optional scoped elementwise fusion; eager operators remain the default. */
 final class Fusion
@@ -69,6 +91,8 @@ final class FusionExecution
     /** Query the completion event without synchronizing. */
     public function isFinished(): bool {}
 }
+
+namespace PhpTensors;
 
 /** Compile CUDA C++ source into PTX with NVRTC. */
 class Compiler
@@ -135,15 +159,38 @@ class CompiledModule
     public function cleanup(): int {}
 }
 
-/** Contiguous CPU tensor, also available as Cuda\HostArray; [] uses native handlers. */
-class ContiguousArray
+/** Opaque CUDA kernel metadata registered by a Compiler. */
+final class Kernel {}
+
+namespace PhpTensors;
+
+/**
+ * Host-resident tensor; unsupported operations throw RuntimeException.
+ */
+final class HostArray implements Tensor, Numbers
 {
     /** Copy a rectangular numeric PHP array into CPU storage. */
     public function __construct(array $values, ?string $dtype = 'float32', bool $pinned = false) {}
+    /** Create from row-major flat values and an explicit shape. */
+    public static function fromFlatArray(array $values, array $shape, ?string $dtype = 'float32'): self {}
+    /** Create a zero-filled host tensor. */
+    public static function zeros(array $shape, ?string $dtype = 'float32'): self {}
+    /** Create a one-filled host tensor. */
+    public static function ones(array $shape, ?string $dtype = 'float32'): self {}
+    /** Create a constant-filled host tensor. */
+    public static function full(array $shape, float|int $value, ?string $dtype = 'float32'): self {}
+    /** Create a zero-filled tensor matching a prototype's shape and dtype. */
+    public static function zerosLike(self $prototype, ?string $dtype = null): self {}
+    /** Create a one-filled tensor matching a prototype's shape and dtype. */
+    public static function onesLike(self $prototype, ?string $dtype = null): self {}
     /** Import row-major packed bytes. */
     public static function fromBuffer(string $bytes, array $shape, ?string $dtype = 'float32', bool $pinned = false): self {}
-    /** Whether storage is page-locked with cudaMallocHost. */
+    /** Whether storage is page-locked; always false for CPU tensors. */
     public function isPinned(): bool {}
+    /** Backend identifier for this tensor. */
+    public function getBackend(): string {}
+    /** Dtype name. */
+    public function dtype(): string {}
     /**
      * Read one element by multidimensional coordinates.
      * @param list<int> $indices
@@ -153,20 +200,226 @@ class ContiguousArray
     public function at(int ...$indices): mixed {}
     /** Shape in row-major dimension order. @return list<int> */
     public function getShape(): array {}
+    /** Element strides in row-major order. @return list<int> */
+    public function getStrides(): array {}
     /** Materialize nested PHP arrays. */
     public function toArray(): array {}
     /** Number of dimensions. */
     public function getNdims(): int {}
     /** Total number of elements. */
     public function getSize(): int {}
-    /** Element dtype name, e.g. float32. */
+    /** Element dtype name, e.g. float32, float16 or bfloat16. */
     public function getDtype(): string {}
     /** Bytes per element. */
     public function getElementSize(): int {}
     /** Length of the first dimension. */
     public function count(): int {}
-    /** Copy CPU storage into a GPU tensor. */
+    /** Add another same-shaped CPU tensor or scalar. */
+    public function add(HostArray|int|float|bool $other): self {}
+    /** Subtract another same-shaped CPU tensor or scalar. */
+    public function subtract(HostArray|int|float|bool $other): self {}
+    /** Multiply by another same-shaped CPU tensor or scalar. */
+    public function multiply(HostArray|int|float|bool $other): self {}
+    /** Divide by another same-shaped CPU tensor or non-zero scalar. */
+    public function divide(HostArray|int|float|bool $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function fromFile(string $path, array $shape, ?string $dtype = 'float32'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function fromNpy(string $path): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function where(self $condition, self $x, self $y): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function __invoke(int|array|null ...$slices): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function slice(int|string|array|null ...$selectors): self {}
+    /** Shape, dtype, and element count for debugging. */
+    public function __debugInfo(): array {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function concat(array $tensors, ?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function maximum(self|int|float|bool $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function minimum(self|int|float|bool $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function clamp(float|int|null $min = null, float|int|null $max = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function clip(float|int $minimum, float|int $maximum): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function matmul(self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function transpose(?array $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function copy(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function swapaxes(int $axis1, int $axis2): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function moveaxis(int|array $source, int|array $destination): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function diagonal(int $offset = 0, int $axis1 = 0, int $axis2 = 1): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function repeat(int|array $repeats, ?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function tile(int|array $reps): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function stack(array $tensors, int $axis = 0): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function flip(int|array|null $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function roll(int|array $shift, int|array|null $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function power(self|float|int $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sqrt(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function exp(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sigmoid(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sigmoidDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function softmaxDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function relu(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function reluDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function leakyRelu(float $alpha = 0.01): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function leakyReluDerivative(float $alpha = 0.01): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function expm1(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function exp2(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function log(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function log1p(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function log2(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function log10(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sin(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function cos(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function tan(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function asin(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function acos(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function atan(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sinh(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function cosh(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function tanh(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function tanhDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function abs(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function neg(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function floor(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function ceil(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function round(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function gt(float|self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function lt(float|self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function eq(float|self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function ne(float|self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function ge(float|self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function le(float|self $other): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sum(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function mean(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function max(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function min(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function prod(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function cumsum(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function cumprod(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function argMax(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function argMin(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function all(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function any(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function var(?int $axis = null, int $correction = 0): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function std(?int $axis = null, int $correction = 0): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function softmax(int $axis = -1): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function layerNorm(array $axes, float $epsilon = 0.00001, ?self $scale = null, ?self $bias = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function gather(self $indices, int $axis = 0): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function scatterAdd(self $indices, self $updates, int $axis = 0): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function reshape(array $shape): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function squeeze(?int $axis = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function unsqueeze(int $axis): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function broadcastTo(array $shape): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function flatten(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function fullLike(self $prototype, float|int $value, ?string $dtype = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function eye(int $rows, ?int $columns = null, int $k = 0, ?string $dtype = 'float32'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function identity(int $size, ?string $dtype = 'float32'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function arange(float|int $start, float|int|null $stop = null, float|int $step = 1, ?string $dtype = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function linspace(float|int $start, float|int $stop, int $num = 50, bool $endpoint = true, ?string $dtype = 'float64'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function logspace(float $start, float $stop, int $num = 50, bool $endpoint = true, float $base = 10.0, ?string $dtype = 'float32'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function randomUniform(array $shape, float $minimum, float $maximum, int $seed, ?string $dtype = 'float32'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function rand(array $shape, float|int $min = 0, float|int $max = 1, ?string $dtype = 'float32', ?int $seed = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function randn(array $shape, ?string $dtype = 'float32', ?int $seed = null): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function astype(string $dtype): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function requiresGrad(bool $requiresGrad = true): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function backward(?self $gradient = null, bool $retainGraph = false): void {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function grad(): ?self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function zeroGrad(): void {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function detach(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function item(): int|float|bool {}
+    /** Copy CPU storage into a GPU tensor; requires a CUDA-enabled build. */
     public function toGpu(): CudaArray {}
+    /** Return this already host-resident tensor. */
+    public function toHost(): self {}
     /** Export contiguous row-major bytes without PHP scalar expansion. */
     public function toBuffer(): string {}
     /** Serialize shape, dtype, and raw CPU storage. */
@@ -175,15 +428,18 @@ class ContiguousArray
     public function __unserialize(array $data): void {}
 }
 
-/** Public name for ContiguousArray, retained for compatibility. */
-class_alias(ContiguousArray::class, 'Cuda\\HostArray');
+namespace PhpTensors;
 
+/** Contiguous host-memory buffer for explicit copies to CUDA. */
 /** GPU-resident n-dimensional tensor; [] uses native dimension handlers. */
-class CudaArray
+class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
 {
     /** Import row-major little-endian packed bytes matching shape and dtype. */
     public static function fromBuffer(string $bytes, array $shape, ?string $dtype = 'float32'): CudaArray {}
-    /** Copy a flat numeric PHP array directly into the requested row-major shape. */
+    /**
+     * Copy a flat numeric PHP array directly into the requested row-major shape.
+     * Supports float16 and bfloat16 storage.
+     */
     public static function fromFlatArray(array $values, array $shape, ?string $dtype = 'float32'): CudaArray {}
     /** Read raw packed bytes (not .npy) into GPU storage. */
     public static function fromFile(string $path, array $shape, ?string $dtype = 'float32'): CudaArray {}
@@ -191,12 +447,6 @@ class CudaArray
     public static function fromNpy(string $path): CudaArray {}
     /** Select x or y by nonzero mask with broadcasting; x/y must share dtype. */
     public static function where(CudaArray $condition, CudaArray $x, CudaArray $y): CudaArray {}
-    /** Elementwise minimum with NumPy-style trailing-dimension broadcasting; NaN propagates. */
-    public static function minimum(CudaArray $a, CudaArray $b): CudaArray {}
-    /** Elementwise maximum with NumPy-style trailing-dimension broadcasting; NaN propagates. */
-    public static function maximum(CudaArray $a, CudaArray $b): CudaArray {}
-    /** Clamp values to the closed interval [$minimum, $maximum]; NaN data is preserved. */
-    public function clip(int|float $minimum, int|float $maximum): CudaArray {}
     /** Copy a rectangular numeric PHP array onto the GPU; keys are ignored in iteration order. */
     public function __construct(array $data, ?string $dtype = 'float32') {}
     /** Serialize contiguous GPU storage; views cannot be serialized directly. */
@@ -210,7 +460,8 @@ class CudaArray
     /** Return shape, dtype, and count for debugging. */
     public function __debugInfo(): array {}
     /**
-     * Concatenate tensors along an axis.
+     * Concatenate tensors along an axis. Supported in synchronous Fusion execution,
+     * but not asynchronous replay or CUDA Graph capture.
      * @param list<CudaArray> $tensors
      */
     public function concat(array $tensors, ?int $axis = null): CudaArray {}
@@ -222,24 +473,115 @@ class CudaArray
     public function add(CudaArray|float|int|bool $other): CudaArray {}
     /** Elementwise subtract with scalar or broadcast-compatible tensor. */
     public function subtract(CudaArray|float|int|bool $other): CudaArray {}
-    /** Matrix multiply (2D or batched); cuBLAS is optional when available. */
+    /** Elementwise maximum with broadcasting. Ties route gradients to the left operand. */
+    public function maximum(CudaArray|float|int|bool $other): CudaArray {}
+    /** Elementwise minimum with broadcasting. Ties route gradients to the left operand. */
+    public function minimum(CudaArray|float|int|bool $other): CudaArray {}
+    /** Clamp values to optional inclusive scalar bounds. */
+    public function clamp(float|int|null $min = null, float|int|null $max = null): CudaArray {}
+    /** Clip values to the closed interval [$minimum, $maximum]. */
+    public function clip(float|int $minimum, float|int $maximum): CudaArray {}
+    /**
+     * Matrix multiply (2D or batched). Matching float32, float16 and bfloat16
+     * operands are supported; low-precision products accumulate in float32
+     * and retain the operand dtype. FP16/BF16 gradients are returned as float32.
+     */
     public function matmul(CudaArray $other): CudaArray {}
     /** Permute axes; omitting axis reverses their order. */
     public function transpose(?array $axis = null): CudaArray {}
+    /** Copy logical elements to independent contiguous storage. */
+    public function copy(): CudaArray {}
+    /** Swap two axes and return a view. */
+    public function swapaxes(int $axis1, int $axis2): CudaArray {}
+    /**
+     * Move one or more axes to new positions and return a view.
+     * @param int|list<int> $source
+     * @param int|list<int> $destination
+     */
+    public function moveaxis(int|array $source, int|array $destination): CudaArray {}
+    /**
+     * Extract a diagonal into a tensor; supported by Fusion kernels.
+     */
+    public function diagonal(int $offset = 0, int $axis1 = 0, int $axis2 = 1): CudaArray {}
+    /**
+     * Repeat each element a fixed or per-element number of times.
+     * Null axis flattens first; per-element counts are synchronous Fusion boundaries.
+     * @param int|list<int> $repeats
+     */
+    public function repeat(int|array $repeats, ?int $axis = null): CudaArray {}
+    /**
+     * Repeat the tensor by scalar or per-axis repetition counts.
+     * Supported by Fusion kernels.
+     * @param int|list<int> $reps
+     */
+    public function tile(int|array $reps): CudaArray {}
+    /** Stack tensors along a new axis. */
+    public static function stack(array $tensors, int $axis = 0): CudaArray {}
+    /**
+     * Reverse selected axes, or all axes by default.
+     * Supported by Fusion kernels.
+     * @param int|list<int>|null $axis
+     */
+    public function flip(int|array|null $axis = null): CudaArray {}
+    /**
+     * Circularly shift values; null axis rolls the flattened logical tensor.
+     * Supported by Fusion kernels.
+     * @param int|list<int> $shift
+     * @param int|list<int>|null $axis
+     */
+    public function roll(int|array $shift, int|array|null $axis = null): CudaArray {}
     /** Elementwise exponentiation. */
     public function power(CudaArray|float|int $other): CudaArray {}
     /** Elementwise square root. */
     public function sqrt(): CudaArray {}
     /** Elementwise exponential. */
     public function exp(): CudaArray {}
+    /** Numerically stable elementwise logistic sigmoid; supports float32 and float64 only. */
+    public function sigmoid(): CudaArray {}
+    /** Apply y * (1 - y) to values already activated by sigmoid(); supports float32 and float64 only. */
+    public function sigmoidDerivative(): CudaArray {}
+    /** Diagonal softmax derivative y * (1 - y) for already normalized values; not a full Jacobian. */
+    public function softmaxDerivative(): CudaArray {}
+    /** Elementwise ReLU: x for x > 0, otherwise +0; supports float32 and float64 only. */
+    public function relu(): CudaArray {}
+    /** ReLU derivative of the original input: 1 for x > 0, otherwise +0; supports float32 and float64 only. */
+    public function reluDerivative(): CudaArray {}
+    /** Leaky ReLU with configurable finite negative slope; supports float32 and float64 only. */
+    public function leakyRelu(float $alpha = 0.01): CudaArray {}
+    /** Derivative of leaky ReLU on the original input; supports float32 and float64 only. */
+    public function leakyReluDerivative(float $alpha = 0.01): CudaArray {}
+    /** Elementwise exp(x) - 1, evaluated with improved precision near zero. */
+    public function expm1(): CudaArray {}
+    /** Elementwise base-2 exponential. */
+    public function exp2(): CudaArray {}
     /** Elementwise natural logarithm. */
     public function log(): CudaArray {}
+    /** Elementwise log(1 + x), evaluated with improved precision near zero. */
+    public function log1p(): CudaArray {}
+    /** Elementwise base-2 logarithm. */
+    public function log2(): CudaArray {}
+    /** Elementwise base-10 logarithm. */
+    public function log10(): CudaArray {}
     /** Elementwise sine. */
     public function sin(): CudaArray {}
     /** Elementwise cosine. */
     public function cos(): CudaArray {}
     /** Elementwise tangent. */
     public function tan(): CudaArray {}
+    /** Elementwise inverse sine. */
+    public function asin(): CudaArray {}
+    /** Elementwise inverse cosine. */
+    public function acos(): CudaArray {}
+    /** Elementwise inverse tangent. */
+    public function atan(): CudaArray {}
+    /** Elementwise hyperbolic sine. */
+    public function sinh(): CudaArray {}
+    /** Elementwise hyperbolic cosine. */
+    public function cosh(): CudaArray {}
+    /** Elementwise hyperbolic tangent. */
+    public function tanh(): CudaArray {}
+    /** Derivative for activated values y: 1 - y*y; float32 and float64 only. */
+    public function tanhDerivative(): CudaArray {}
     /** Elementwise absolute value. */
     public function abs(): CudaArray {}
     /** Elementwise negation. */
@@ -272,6 +614,26 @@ class CudaArray
     public function min(?int $axis = null): CudaArray {}
     /** Product across an axis; omit axis to reduce all elements. */
     public function prod(?int $axis = null): CudaArray {}
+    /** Cumulative sum; null axis flattens the input. Integer inputs widen to int64. */
+    public function cumsum(?int $axis = null): CudaArray {}
+    /** Cumulative product; null axis flattens the input. Integer inputs widen to int64. */
+    public function cumprod(?int $axis = null): CudaArray {}
+    /** Logical AND over nonzero values; returns a bool tensor. */
+    public function all(?int $axis = null): CudaArray {}
+    /** Logical OR over nonzero values; returns a bool tensor. */
+    public function any(?int $axis = null): CudaArray {}
+    /** Population variance by default; correction adjusts the denominator. */
+    public function var(?int $axis = null, int $correction = 0): CudaArray {}
+    /** Square root of var(). */
+    public function std(?int $axis = null, int $correction = 0): CudaArray {}
+    /** Numerically stable softmax; low-precision input is widened to float32. */
+    public function softmax(int $axis = -1): CudaArray {}
+    /**
+     * Normalize across explicit axes, promoting integer input to float64.
+     * Scale and bias shapes follow the axes in the same order.
+     * @param list<int> $axes
+     */
+    public function layerNorm(array $axes, float $epsilon = 0.00001, ?CudaArray $scale = null, ?CudaArray $bias = null): CudaArray {}
     /** Index of maximum across an axis. */
     public function argMax(?int $axis = null): CudaArray {}
     /** Index of minimum across an axis. */
@@ -287,11 +649,17 @@ class CudaArray
     /** Materialize nested PHP arrays on the CPU. */
     public function toArray(): array {}
     /** Copy into contiguous CPU storage without PHP scalar expansion. */
-    public function toHost(): ContiguousArray {}
+    public function toHost(): \PhpTensors\HostArray {}
     /** Download logical row-major bytes directly, without PHP scalar expansion. */
     public function toBuffer(): string {}
     /** Create a view with the same element count. */
     public function reshape(array $shape): CudaArray {}
+    /** Remove singleton dimensions; an optional axis must have size one. */
+    public function squeeze(?int $axis = null): CudaArray {}
+    /** Insert a singleton dimension at axis. */
+    public function unsqueeze(int $axis): CudaArray {}
+    /** Broadcast singleton axes or add leading axes without copying; captured by synchronous Fusion. */
+    public function broadcastTo(array $shape): CudaArray {}
     /** Create a one-dimensional view. */
     public function flatten(): CudaArray {}
     /** Allocate a zero-filled GPU tensor. */
@@ -300,65 +668,108 @@ class CudaArray
     public static function ones(array $shape, ?string $dtype = 'float32'): CudaArray {}
     /** Allocate a constant-filled GPU tensor. */
     public static function full(array $shape, float|int $value, ?string $dtype = 'float32'): CudaArray {}
-    /** Generate non-reproducible uniform random GPU values; no seed parameter is exposed. */
-    public static function rand(array $shape, float|int $min = 0, float|int $max = 1, ?string $dtype = 'float32'): CudaArray {}
-    /** Generate reproducible uniform GPU values in [$minimum, $maximum). */
+    /** Allocate a zero-filled tensor with a prototype's shape and, by default, dtype. */
+    public static function zerosLike(CudaArray $prototype, ?string $dtype = null): CudaArray {}
+    /** Allocate a one-filled tensor with a prototype's shape and, by default, dtype. */
+    public static function onesLike(CudaArray $prototype, ?string $dtype = null): CudaArray {}
+    /** Allocate a constant-filled tensor with a prototype's shape and, by default, dtype. */
+    public static function fullLike(CudaArray $prototype, float|int $value, ?string $dtype = null): CudaArray {}
+    /** Create a rectangular identity matrix with an optional diagonal offset. */
+    public static function eye(int $rows, ?int $columns = null, int $k = 0, ?string $dtype = 'float32'): CudaArray {}
+    /** Create a square identity matrix. */
+    public static function identity(int $size, ?string $dtype = 'float32'): CudaArray {}
+    /**
+     * Create evenly spaced values in the half-open interval [start, stop).
+     * With one argument, it is interpreted as stop. Integer arguments default to int64;
+     * any floating-point argument defaults to float64.
+     */
+    public static function arange(float|int $start, float|int|null $stop = null, float|int $step = 1, ?string $dtype = null): CudaArray {}
+    /**
+     * Create num evenly spaced values between start and stop.
+     * The default output dtype is float64.
+     */
+    public static function linspace(float|int $start, float|int $stop, int $num = 50, bool $endpoint = true, ?string $dtype = 'float64'): CudaArray {}
+    /** Create logarithmically spaced values by interpolating exponents on the GPU. */
+    public static function logspace(float $start, float $stop, int $num = 50, bool $endpoint = true, float $base = 10.0, ?string $dtype = 'float32'): CudaArray {}
+    /**
+     * Generate uniformly distributed GPU values in [min, max).
+     * Omitted seeds produce new values; a seed makes the result reproducible.
+     */
+    public static function rand(array $shape, float|int $min = 0, float|int $max = 1, ?string $dtype = 'float32', ?int $seed = null): CudaArray {}
+    /**
+     * Generate standard-normal GPU values.
+     * Omitted seeds produce new values; a seed makes the result reproducible.
+     */
+    public static function randn(array $shape, ?string $dtype = 'float32', ?int $seed = null): CudaArray {}
+    /** Generate reproducible uniformly distributed GPU values in [minimum, maximum). */
     public static function randomUniform(array $shape, float $minimum, float $maximum, int $seed, ?string $dtype = 'float32'): CudaArray {}
     /**
-     * Generate GPU values from a normal distribution.
-     * No seed parameter is exposed; non-constant calls use a process-local
-     * atomic counter plus available entropy and timing data. This avoids the
-     * known time/address repetition pattern but is not a cryptographic or
-     * absolute-uniqueness guarantee. Non-finite generated values are rejected.
+     * Gather values using same-rank int32 indices along an axis.
+     * Synchronous Fusion execution is supported; async and CUDA Graph capture are not.
      */
-    public static function randn(array $shape, float $mean = 0.0, float $std = 1.0, ?string $dtype = 'float32'): CudaArray {}
+    public function gather(CudaArray $indices, int $axis = 0): CudaArray {}
     /**
-     * Create a GPU-resident one-dimensional sequence with an exclusive stop.
-     * @throws InvalidArgumentException For zero/non-finite steps or unsupported ranges/dtypes.
+     * Add updates at indexed positions and return a new tensor. Duplicate indices accumulate.
+     * Currently supports float32/float64. Synchronous Fusion execution is
+     * supported; async and CUDA Graph capture are not.
      */
-    public static function arange(float|int $start, float|int|null $stop = null, float|int $step = 1, ?string $dtype = 'float32'): CudaArray {}
-
-    /**
-     * Create a GPU-resident one-dimensional uniformly spaced sequence.
-     * @throws InvalidArgumentException For invalid bounds, counts, or unsupported dtypes.
-     */
-    public static function linspace(float $start, float $stop, int $num = 50, bool $endpoint = true, ?string $dtype = 'float32'): CudaArray {}
-
-    /**
-     * Create a GPU-resident logarithmically spaced sequence.
-     * @throws InvalidArgumentException For non-positive/non-finite bases, invalid counts, overflow, or unsupported dtypes.
-     */
-    public static function logspace(float $start, float $stop, int $num = 50, bool $endpoint = true, float $base = 10.0, ?string $dtype = 'float32'): CudaArray {}
-
-    /**
-     * Create a GPU-resident identity matrix with an optional diagonal offset.
-     * @throws InvalidArgumentException For invalid dimensions or unsupported dtypes.
-     */
-    public static function eye(int $n, ?int $m = null, int $k = 0, ?string $dtype = 'float32'): CudaArray {}
-
-    /**
-     * Create a GPU-resident square identity matrix.
-     * @throws InvalidArgumentException For invalid dimensions or unsupported dtypes.
-     */
-    public static function identity(int $n, ?string $dtype = 'float32'): CudaArray {}
-    /** Return an independent GPU-resident copy, materializing non-contiguous views. */
-    public function copy(): CudaArray {}
-    /** Repeat the tensor along its first dimension with independent GPU storage. */
-    public function tile(int $times): CudaArray {}
-    /** Stack CudaArray objects along a new leading dimension. */
-    public static function stack(array $tensors): CudaArray {}
+    public function scatterAdd(CudaArray $indices, CudaArray $updates, int $axis = 0): CudaArray {}
     /**
      * Identical dtype reuses storage; safe conversions allocate converted storage.
      * @throws InvalidArgumentException For an unsafe conversion.
      * @throws RuntimeException If compilation or GPU execution fails.
      */
     public function astype(string $dtype): CudaArray {}
-    /** Element dtype name, e.g. float32. */
+    /** Element dtype name, e.g. float32, float16 or bfloat16. */
     public function dtype(): string {}
+    /** Backend that owns this tensor's storage. */
+    public function getBackend(): string {}
+    /** Enable or disable reverse-mode gradient tracking on a leaf tensor. */
+    /** FP16/BF16 tracking is currently supported for matmul and shape views only; gradients use float32. */
+    public function requiresGrad(bool $requiresGrad = true): CudaArray {}
+    /** Compute gradients; non-scalar tensors require a seed. Graphs are freed unless retained. */
+    public function backward(?CudaArray $gradient = null, bool $retainGraph = false): void {}
+    /** Return the accumulated gradient of a leaf tensor, or null before backward(). */
+    public function grad(): ?CudaArray {}
+    /** Clear the accumulated gradient. */
+    public function zeroGrad(): void {}
+    /** Return a view that shares storage but is disconnected from gradient history. */
+    public function detach(): CudaArray {}
+    /** Return the sole tensor element as a PHP scalar. */
+    public function item(): int|float|bool {}
+}
+
+/**
+ * Functional SGD and AdamW updates. Optimizer state is explicit so steps can
+ * be captured and replayed by Fusion without storing hidden tensor history.
+ */
+namespace PhpTensors;
+
+final class Optimizer
+{
+    private function __construct() {}
+    public static function adamW(float $learningRate = 0.001, float $beta1 = 0.9,
+        float $beta2 = 0.999, float $epsilon = 1.0e-8, float $weightDecay = 0.01): self {}
+    public static function sgd(float $learningRate = 0.01, float $momentum = 0.0,
+        float $weightDecay = 0.0): self {}
+    /** Create zeroed moment/velocity tensors for this ordered parameter list. */
+    public function initState(array $parameters): array {}
+    /** Clear accumulated gradients on the supplied leaf parameters. */
+    public function zeroGrad(array $parameters): void {}
+    /**
+     * Apply one functional optimizer step.
+     * @param list<CudaArray> $parameters
+     * @param list<CudaArray> $gradients
+     * @param array<string,mixed> $state State returned by initState() or step().
+     * @param list<bool>|null $weightDecayMask Defaults to decaying every parameter.
+     * @return array{parameters:list<CudaArray>,state:array<string,mixed>}
+     */
+    public function step(array $parameters, array $gradients, array $state,
+        ?CudaArray $learningRate = null, ?array $weightDecayMask = null): array {}
 }
 
 /** Abstract base dispatching PHP arithmetic operators to magic methods. */
-abstract class Number
+abstract class Number implements Numbers
 {
     /** Handle addition. */
     abstract public function __add(mixed $left, mixed $right): mixed;

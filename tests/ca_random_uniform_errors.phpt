@@ -1,14 +1,13 @@
 --TEST--
-CudaArray randomUniform validates bounds, shape, and dtype
+PhpTensors\\CudaArray randomUniform validates bounds, shape and dtype
 --SKIPIF--
 <?php
-if (!extension_loaded('cuda')) die('skip cuda extension unavailable');
+if (!extension_loaded('phptensors')) die('skip phptensors extension unavailable');
 if (cuda_get_device_count() < 1) die('skip CUDA device unavailable');
 ?>
 --FILE--
 <?php
-use Cuda\CudaArray;
-
+use PhpTensors\CudaArray;
 $cases = [
     static fn() => CudaArray::randomUniform([], 0.0, 1.0, 1),
     static fn() => CudaArray::randomUniform([-1], 0.0, 1.0, 1),
@@ -20,18 +19,15 @@ $cases = [
     static fn() => CudaArray::randomUniform([2], 2.0, 1.0, 1),
     static fn() => CudaArray::randomUniform([2], 0.0, 1.0, 1, 'int32'),
     static fn() => CudaArray::randomUniform([2], 1.0e39, 1.0e40, 1, 'float32'),
+    static fn() => CudaArray::randomUniform([2], 0.0, 1.0, -1),
 ];
-
 foreach ($cases as $case) {
-    try {
-        $case();
-        echo "NOT_THROWN\n";
-    } catch (Throwable $exception) {
-        echo "THROWN\n";
-    }
+    try { $case(); echo "NOT_THROWN\n"; }
+    catch (Throwable $exception) { echo "THROWN\n"; }
 }
 ?>
 --EXPECT--
+THROWN
 THROWN
 THROWN
 THROWN
