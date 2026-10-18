@@ -11,8 +11,11 @@ use PhpTensors\CudaArray;
 
 function show_softmax(array $values, string $dtype): void {
     $result = CudaArray::fromFlatArray($values, [count($values)], $dtype)->softmax()->toArray();
-    foreach ($result as $value) printf("%s ", is_nan($value) ? "NAN" : sprintf("%.6f", $value));
-    echo "\n";
+    $formatted = [];
+    foreach ($result as $value) {
+        $formatted[] = is_nan($value) ? "NAN" : sprintf("%.6f", $value);
+    }
+    echo implode(" ", $formatted), "\n";
 }
 
 show_softmax([INF, INF, 0.0, -INF], 'float32');
