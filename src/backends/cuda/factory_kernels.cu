@@ -125,6 +125,27 @@ __device__ static double read_cast_source(const void *source, dtype_t dtype, siz
     }
 }
 
+__global__ static void validate_finite_kernel(const void *data, dtype_t dtype,
+                                               size_t count, unsigned int *invalid)
+{
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < count; index += (size_t)blockDim.x * gridDim.x)
+    {
+        if (!isfinite(read_cast_source(data, dtype, index)))
+            atomicExch(invalid, 1u);
+    }
+}
+
+extern "C" cudaError_t launch_validate_finite(const void *data, dtype_t dtype,
+                                                size_t total_elements, unsigned int *invalid)
+{
+    if (!total_elements) return cudaSuccess;
+    if (!data || !invalid) return cudaErrorInvalidValue;
+    validate_finite_kernel<<<cuda_grid_1d(total_elements), 256>>>(
+        data, dtype, total_elements, invalid);
+    return cudaGetLastError();
+}
+
 __global__ static void cast_tensor_kernel(
     const void *source, void *destination,
     dtype_t source_dtype, dtype_t destination_dtype, size_t count)
@@ -430,6 +451,99 @@ extern "C" cudaError_t launch_linspace(void *output, dtype_t dtype,
         return cudaErrorInvalidValue;
     linspace_kernel<<<cuda_grid_1d(total_elements), 256>>>(
         output, dtype, total_elements, start, stop, endpoint);
+    return cudaGetLastError();
+}
+
+__global__ static void logspace_kernel(void *output, dtype_t dtype,
+                                       size_t total_elements, double start,
+                                       double stop, double base, int endpoint)
+{
+    if (total_elements == 0) return;
+    const size_t denominator = endpoint ? total_elements - 1 : total_elements;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < total_elements; index += (size_t)blockDim.x * gridDim.x)
+    {
+        double exponent;
+        if (total_elements == 1)
+            exponent = start;
+        else if (endpoint && index + 1 == total_elements)
+            exponent = stop;
+        else
+        {
+            double fraction = (double)index / (double)denominator;
+            exponent = start * (1.0 - fraction) + stop * fraction;
+        }
+
+        double value = pow(base, exponent);
+        if (dtype != DTYPE_FLOAT32 && dtype != DTYPE_FLOAT64)
+        {
+            double nearest = nearbyint(value);
+            double scale = fabs(value) > 1.0 ? fabs(value) : 1.0;
+            double tolerance = 8.0 * 2.2204460492503131e-16 * scale;
+            if (fabs(value - nearest) <= tolerance) value = nearest;
+        }
+        store_generated_value(output, dtype, index, value);
+    }
+}
+
+extern "C" cudaError_t launch_logspace(void *output, dtype_t dtype,
+                                        size_t total_elements, double start,
+                                        double stop, double base, int endpoint)
+{
+    if (!total_elements) return cudaSuccess;
+    if (!output || dtype < 0 || dtype >= DTYPE_COUNT)
+        return cudaErrorInvalidValue;
+    logspace_kernel<<<cuda_grid_1d(total_elements), 256>>>(
+        output, dtype, total_elements, start, stop, base, endpoint);
+    return cudaGetLastError();
+}
+
+template <typename T>
+__global__ static void scale_uniform_range_kernel(T *values, size_t size,
+                                                   double minimum, double maximum)
+{
+    T lower = (T)minimum;
+    T upper = (T)maximum;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < size; index += (size_t)blockDim.x * gridDim.x)
+    {
+        double unit = (double)values[index];
+        /* cuRAND's uniform generators produce (0, 1]. Rotate 1 to zero so
+         * the transformed range remains half-open without extra mass at the
+         * upper endpoint. */
+        if (unit == 1.0) unit = 0.0;
+
+        double scaled = minimum * (1.0 - unit) + maximum * unit;
+        T result = (T)scaled;
+        if (!(result >= lower))
+            result = lower;
+        else if (result >= upper)
+            result = nextafter(upper, lower);
+        values[index] = result;
+    }
+}
+
+extern "C" cudaError_t launch_scale_uniform_range_kernel(
+    void *base, dtype_t dtype, size_t total_elements,
+    double minimum, double maximum)
+{
+    if (total_elements == 0) return cudaSuccess;
+    if (!base || !(minimum < maximum)) return cudaErrorInvalidValue;
+
+    dim3 grid = cuda_grid_1d(total_elements);
+    switch (dtype)
+    {
+        case DTYPE_FLOAT32:
+            scale_uniform_range_kernel<<<grid, 256>>>(
+                (float *)base, total_elements, minimum, maximum);
+            break;
+        case DTYPE_FLOAT64:
+            scale_uniform_range_kernel<<<grid, 256>>>(
+                (double *)base, total_elements, minimum, maximum);
+            break;
+        default:
+            return cudaErrorInvalidValue;
+    }
     return cudaGetLastError();
 }
 

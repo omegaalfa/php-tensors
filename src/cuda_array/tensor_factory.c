@@ -8,6 +8,12 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <errno.h>
+#include <sys/random.h>
+#endif
 
 typedef struct {
     tensor_t *tensor;
@@ -396,14 +402,44 @@ void destroy_curand_generator(curandGenerator_t generator)
     }
 }
 
+static uint64_t random_seed_mix(uint64_t value)
+{
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
 static unsigned long long next_random_seed(void)
 {
-    static uint64_t counter = 0;
+    static _Atomic uint64_t counter = 0;
+    uint64_t sequence = atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed) + 1;
+    uint64_t entropy = 0;
+    uint64_t clock_bits = 0;
     struct timespec now;
-    timespec_get(&now, TIME_UTC);
-    uint64_t sequence = __atomic_fetch_add(&counter, 1, __ATOMIC_RELAXED);
-    return (unsigned long long)(((uint64_t)now.tv_sec << 32) ^
-        (uint64_t)now.tv_nsec ^ (sequence * UINT64_C(0x9e3779b97f4a7c15)));
+
+#if defined(__linux__)
+    ssize_t received;
+    do {
+        received = getrandom(&entropy, sizeof(entropy), GRND_NONBLOCK);
+    } while (received < 0 && errno == EINTR);
+    if (received != (ssize_t)sizeof(entropy)) entropy = 0;
+#endif
+
+#if defined(CLOCK_MONOTONIC)
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+        clock_bits = ((uint64_t)now.tv_sec * UINT64_C(1000000007)) ^ (uint64_t)now.tv_nsec;
+#else
+    if (timespec_get(&now, TIME_UTC) == TIME_UTC)
+        clock_bits = ((uint64_t)now.tv_sec * UINT64_C(1000000007)) ^ (uint64_t)now.tv_nsec;
+#endif
+
+    uint64_t process_bits = (uint64_t)(unsigned long)getpid();
+    uint64_t mixed = entropy ^ clock_bits ^ (process_bits << 32) ^ process_bits;
+    mixed ^= sequence * UINT64_C(0x9e3779b97f4a7c15);
+    mixed = random_seed_mix(mixed);
+    return (unsigned long long)(mixed ? mixed : random_seed_mix(sequence) | 1);
 }
 
 int set_rand_tensor_data(void *data,
@@ -532,6 +568,14 @@ static int set_randn_tensor_data(void *data, size_t size, dtype_t dtype,
         return FAILURE;
     }
 
+    unsigned int *invalid = (unsigned int *)cuda_mem_alloc(sizeof(*invalid));
+    if (!invalid)
+    {
+        cuda_mem_free(temporary);
+        CUDA_THROW_OOM("Unable to allocate normal random validation state");
+        return FAILURE;
+    }
+
     curandGenerator_t generator = NULL;
     curandStatus_t status = curandCreateGenerator(&generator, CURAND_RNG_PSEUDO_DEFAULT);
     if (status == CURAND_STATUS_SUCCESS)
@@ -548,18 +592,37 @@ static int set_randn_tensor_data(void *data, size_t size, dtype_t dtype,
         error = use_double
             ? launch_scale_normal_double_kernel((double *)temporary, data, 0.0, 1.0, size)
             : launch_scale_normal_kernel((float *)temporary, data, dtype, 0.0, 1.0, size);
+    if (error == cudaSuccess) error = cudaMemset(invalid, 0, sizeof(*invalid));
+    if (error == cudaSuccess)
+        error = launch_validate_finite(data, dtype, size, invalid);
     if (error == cudaSuccess) error = cudaDeviceSynchronize();
 
     destroy_curand_generator(generator);
     cuda_mem_free(temporary);
     if (status != CURAND_STATUS_SUCCESS)
     {
+        cuda_mem_free(invalid);
         CUDA_THROW_RUNTIME("Normal random generation failed (cuRAND error %d)", status);
         return FAILURE;
     }
     if (error != cudaSuccess)
     {
         CUDA_THROW_RUNTIME("Normal random kernel failed: %s", cudaGetErrorString(error));
+        cuda_mem_free(invalid);
+        return FAILURE;
+    }
+
+    unsigned int host_invalid = 0;
+    error = cudaMemcpy(&host_invalid, invalid, sizeof(host_invalid), cudaMemcpyDeviceToHost);
+    cuda_mem_free(invalid);
+    if (error != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("Normal random validation failed: %s", cudaGetErrorString(error));
+        return FAILURE;
+    }
+    if (host_invalid)
+    {
+        CUDA_THROW_RUNTIME("Normal random generation produced a non-finite value");
         return FAILURE;
     }
     return SUCCESS;
@@ -578,6 +641,69 @@ tensor_t *cuda_tensor_create_randn(int *shape, int ndims, dtype_t dtype,
     if (!tensor) return NULL;
     if (!has_seed) seed = next_random_seed();
     if (set_randn_tensor_data(tensor->data, tensor->total_size, dtype, seed) != SUCCESS)
+    {
+        cuda_tensor_destroy(tensor);
+        return NULL;
+    }
+    return tensor;
+}
+
+static int set_random_uniform_tensor_data(void *data, size_t size,
+                                          double minimum, double maximum,
+                                          unsigned long long seed,
+                                          dtype_t dtype)
+{
+    if (!size) return SUCCESS;
+
+    curandGenerator_t generator = NULL;
+    curandStatus_t status = curandCreateGenerator(&generator,
+                                                   CURAND_RNG_PSEUDO_DEFAULT);
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        CUDA_THROW_RUNTIME("randomUniform generator creation failed");
+        return FAILURE;
+    }
+
+    status = curandSetPseudoRandomGeneratorSeed(generator, seed);
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        CUDA_THROW_RUNTIME("randomUniform seed setup failed");
+        destroy_curand_generator(generator);
+        return FAILURE;
+    }
+
+    status = dtype == DTYPE_FLOAT32
+        ? curandGenerateUniform(generator, (float *)data, size)
+        : curandGenerateUniformDouble(generator, (double *)data, size);
+    if (status != CURAND_STATUS_SUCCESS)
+    {
+        CUDA_THROW_RUNTIME("randomUniform generation failed");
+        destroy_curand_generator(generator);
+        return FAILURE;
+    }
+
+    cudaError_t error = launch_scale_uniform_range_kernel(
+        data, dtype, size, minimum, maximum);
+    if (error == cudaSuccess) error = cudaDeviceSynchronize();
+    destroy_curand_generator(generator);
+    if (error != cudaSuccess)
+    {
+        CUDA_THROW_RUNTIME("randomUniform kernel failed: %s",
+                           cudaGetErrorString(error));
+        return FAILURE;
+    }
+    return SUCCESS;
+}
+
+tensor_t *cuda_tensor_create_random_uniform(
+    int *shape, int ndims, double minimum, double maximum,
+    unsigned long long seed, dtype_t dtype)
+{
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, ndims, dtype);
+    if (!tensor) return NULL;
+
+    if (set_random_uniform_tensor_data(tensor->data, tensor->total_size,
+                                       minimum, maximum, seed, dtype) != SUCCESS)
     {
         cuda_tensor_destroy(tensor);
         return NULL;
@@ -639,6 +765,24 @@ tensor_t *cuda_tensor_create_linspace(int count, dtype_t dtype, double start,
     {
         cuda_tensor_destroy(tensor);
         CUDA_THROW_RUNTIME("linspace kernel failed: %s", cudaGetErrorString(status));
+        return NULL;
+    }
+    return tensor;
+}
+
+tensor_t *cuda_tensor_create_logspace(int count, dtype_t dtype, double start,
+                                      double stop, double base, int endpoint)
+{
+    int shape[] = {count};
+    tensor_t *tensor = cuda_tensor_create_empty_with_dtype(shape, 1, dtype);
+    if (!tensor) return NULL;
+
+    cudaError_t status = launch_logspace(tensor->data, dtype, tensor->total_size,
+                                         start, stop, base, endpoint);
+    if (status != cudaSuccess)
+    {
+        cuda_tensor_destroy(tensor);
+        CUDA_THROW_RUNTIME("logspace kernel failed: %s", cudaGetErrorString(status));
         return NULL;
     }
     return tensor;

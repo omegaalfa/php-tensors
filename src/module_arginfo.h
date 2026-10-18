@@ -5,79 +5,79 @@
 
 #define MODULE_CLASS_NAME "PhpTensors\\CompiledModule"
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_initialize, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_initialize, 0, 0, _IS_BOOL, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_launch, 0, 0, 1)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_launch, 0, 1, _IS_BOOL, 0)
 ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, config, IS_ARRAY, 1, "[]")
 ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, args, IS_ARRAY, 1, "[]")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_autoGrid, 0, 0, 1)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_autoGrid, 0, 2, IS_ARRAY, 0)
 ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
-ZEND_ARG_TYPE_MASK(0, elements, MAY_BE_LONG | MAY_BE_OBJECT, NULL)
+ZEND_ARG_OBJ_TYPE_MASK(0, elements, PhpTensors\\CudaArray, MAY_BE_LONG, NULL)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_launchAsync, 0, 0, 1)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_launchAsync, 0, 1, IS_LONG, 0)
 ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, config, IS_ARRAY, 1, "[]")
 ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, args, IS_ARRAY, 1, "[]")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_launchAsyncBatch, 0, 0, 1)
-ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, operations, IS_ARRAY, 1, "[]")
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_module_launchAsyncBatch, 0, 1, MAY_BE_ARRAY | MAY_BE_BOOL)
+ZEND_ARG_TYPE_INFO(0, operations, IS_ARRAY, 1)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_sync, 0, 0, 0)
-ZEND_ARG_TYPE_INFO(0, op_id, IS_LONG, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_sync, 0, 0, _IS_BOOL, 0)
+ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, op_id, IS_LONG, 1, "null")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_isFinished, 0, 0, 0)
-ZEND_ARG_TYPE_INFO(0, op_id, IS_LONG, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_isFinished, 0, 0, _IS_BOOL, 0)
+ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, op_id, IS_LONG, 1, "null")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_wait, 0, 0, 0)
-ZEND_ARG_TYPE_INFO(0, op_id, IS_LONG, 0)
-ZEND_ARG_TYPE_INFO(0, timeout_ms, IS_LONG, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_wait, 0, 0, _IS_BOOL, 0)
+ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, op_id, IS_LONG, 1, "null")
+ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, timeout_ms, IS_LONG, 0, "-1")
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_hasKernel, 0, 0, 1)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_hasKernel, 0, 1, _IS_BOOL, 0)
 ZEND_ARG_TYPE_INFO(0, name, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_getKernels, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_getKernels, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_getPtx, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_getPtx, 0, 0, IS_STRING, 1)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_save, 0, 0, 1)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_save, 0, 1, _IS_BOOL, 0)
 ZEND_ARG_TYPE_INFO(0, filename, IS_STRING, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_serialize, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_serialize, 0, 0, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_unserialize, 0, 0, 1)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_unserialize, 0, 1, IS_VOID, 0)
 ZEND_ARG_TYPE_INFO(0, data, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_getAsyncStatus, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_getAsyncStatus, 0, 0, IS_ARRAY, 1)
+ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, op_id, IS_LONG, 1, "null")
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_getStats, 0, 0, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_getPendingOperations, 0, 0, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_cancelOperation, 0, 1, _IS_BOOL, 0)
 ZEND_ARG_TYPE_INFO(0, op_id, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_getStats, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_getPendingOperations, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_cancelOperation, 0, 0, 1)
-ZEND_ARG_TYPE_INFO(0, op_id, IS_LONG, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_module_cleanup, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_module_cleanup, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
 static const zend_function_entry module_methods[] = {

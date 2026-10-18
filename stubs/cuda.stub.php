@@ -243,6 +243,8 @@ final class HostArray implements Tensor, Numbers
     /** Unsupported on the CPU backend until implemented. */
     public function clamp(float|int|null $min = null, float|int|null $max = null): self {}
     /** Unsupported on the CPU backend until implemented. */
+    public function clip(float|int $minimum, float|int $maximum): self {}
+    /** Unsupported on the CPU backend until implemented. */
     public function matmul(self $other): self {}
     /** Unsupported on the CPU backend until implemented. */
     public function transpose(?array $axis = null): self {}
@@ -259,6 +261,8 @@ final class HostArray implements Tensor, Numbers
     /** Unsupported on the CPU backend until implemented. */
     public function tile(int|array $reps): self {}
     /** Unsupported on the CPU backend until implemented. */
+    public static function stack(array $tensors, int $axis = 0): self {}
+    /** Unsupported on the CPU backend until implemented. */
     public function flip(int|array|null $axis = null): self {}
     /** Unsupported on the CPU backend until implemented. */
     public function roll(int|array $shift, int|array|null $axis = null): self {}
@@ -268,6 +272,20 @@ final class HostArray implements Tensor, Numbers
     public function sqrt(): self {}
     /** Unsupported on the CPU backend until implemented. */
     public function exp(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sigmoid(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function sigmoidDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function softmaxDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function relu(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function reluDerivative(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function leakyRelu(float $alpha = 0.01): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function leakyReluDerivative(float $alpha = 0.01): self {}
     /** Unsupported on the CPU backend until implemented. */
     public function expm1(): self {}
     /** Unsupported on the CPU backend until implemented. */
@@ -298,6 +316,8 @@ final class HostArray implements Tensor, Numbers
     public function cosh(): self {}
     /** Unsupported on the CPU backend until implemented. */
     public function tanh(): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public function tanhDerivative(): self {}
     /** Unsupported on the CPU backend until implemented. */
     public function abs(): self {}
     /** Unsupported on the CPU backend until implemented. */
@@ -374,6 +394,10 @@ final class HostArray implements Tensor, Numbers
     public static function arange(float|int $start, float|int|null $stop = null, float|int $step = 1, ?string $dtype = null): self {}
     /** Unsupported on the CPU backend until implemented. */
     public static function linspace(float|int $start, float|int $stop, int $num = 50, bool $endpoint = true, ?string $dtype = 'float64'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function logspace(float $start, float $stop, int $num = 50, bool $endpoint = true, float $base = 10.0, ?string $dtype = 'float32'): self {}
+    /** Unsupported on the CPU backend until implemented. */
+    public static function randomUniform(array $shape, float $minimum, float $maximum, int $seed, ?string $dtype = 'float32'): self {}
     /** Unsupported on the CPU backend until implemented. */
     public static function rand(array $shape, float|int $min = 0, float|int $max = 1, ?string $dtype = 'float32', ?int $seed = null): self {}
     /** Unsupported on the CPU backend until implemented. */
@@ -455,6 +479,8 @@ class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
     public function minimum(CudaArray|float|int|bool $other): CudaArray {}
     /** Clamp values to optional inclusive scalar bounds. */
     public function clamp(float|int|null $min = null, float|int|null $max = null): CudaArray {}
+    /** Clip values to the closed interval [$minimum, $maximum]. */
+    public function clip(float|int $minimum, float|int $maximum): CudaArray {}
     /**
      * Matrix multiply (2D or batched). Matching float32, float16 and bfloat16
      * operands are supported; low-precision products accumulate in float32
@@ -489,6 +515,8 @@ class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
      * @param int|list<int> $reps
      */
     public function tile(int|array $reps): CudaArray {}
+    /** Stack tensors along a new axis. */
+    public static function stack(array $tensors, int $axis = 0): CudaArray {}
     /**
      * Reverse selected axes, or all axes by default.
      * Supported by Fusion kernels.
@@ -508,6 +536,20 @@ class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
     public function sqrt(): CudaArray {}
     /** Elementwise exponential. */
     public function exp(): CudaArray {}
+    /** Numerically stable elementwise logistic sigmoid; supports float32 and float64 only. */
+    public function sigmoid(): CudaArray {}
+    /** Apply y * (1 - y) to values already activated by sigmoid(); supports float32 and float64 only. */
+    public function sigmoidDerivative(): CudaArray {}
+    /** Diagonal softmax derivative y * (1 - y) for already normalized values; not a full Jacobian. */
+    public function softmaxDerivative(): CudaArray {}
+    /** Elementwise ReLU: x for x > 0, otherwise +0; supports float32 and float64 only. */
+    public function relu(): CudaArray {}
+    /** ReLU derivative of the original input: 1 for x > 0, otherwise +0; supports float32 and float64 only. */
+    public function reluDerivative(): CudaArray {}
+    /** Leaky ReLU with configurable finite negative slope; supports float32 and float64 only. */
+    public function leakyRelu(float $alpha = 0.01): CudaArray {}
+    /** Derivative of leaky ReLU on the original input; supports float32 and float64 only. */
+    public function leakyReluDerivative(float $alpha = 0.01): CudaArray {}
     /** Elementwise exp(x) - 1, evaluated with improved precision near zero. */
     public function expm1(): CudaArray {}
     /** Elementwise base-2 exponential. */
@@ -538,6 +580,8 @@ class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
     public function cosh(): CudaArray {}
     /** Elementwise hyperbolic tangent. */
     public function tanh(): CudaArray {}
+    /** Derivative for activated values y: 1 - y*y; float32 and float64 only. */
+    public function tanhDerivative(): CudaArray {}
     /** Elementwise absolute value. */
     public function abs(): CudaArray {}
     /** Elementwise negation. */
@@ -645,6 +689,8 @@ class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
      * The default output dtype is float64.
      */
     public static function linspace(float|int $start, float|int $stop, int $num = 50, bool $endpoint = true, ?string $dtype = 'float64'): CudaArray {}
+    /** Create logarithmically spaced values by interpolating exponents on the GPU. */
+    public static function logspace(float $start, float $stop, int $num = 50, bool $endpoint = true, float $base = 10.0, ?string $dtype = 'float32'): CudaArray {}
     /**
      * Generate uniformly distributed GPU values in [min, max).
      * Omitted seeds produce new values; a seed makes the result reproducible.
@@ -655,6 +701,8 @@ class CudaArray implements \PhpTensors\Tensor, \PhpTensors\Numbers
      * Omitted seeds produce new values; a seed makes the result reproducible.
      */
     public static function randn(array $shape, ?string $dtype = 'float32', ?int $seed = null): CudaArray {}
+    /** Generate reproducible uniformly distributed GPU values in [minimum, maximum). */
+    public static function randomUniform(array $shape, float $minimum, float $maximum, int $seed, ?string $dtype = 'float32'): CudaArray {}
     /**
      * Gather values using same-rank int32 indices along an axis.
      * Synchronous Fusion execution is supported; async and CUDA Graph capture are not.

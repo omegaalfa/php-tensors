@@ -9,6 +9,13 @@ typedef enum
     OP_DIV,
     OP_POW,
     OP_EXP,
+    OP_SIGMOID,
+    OP_SIGMOID_DERIVATIVE,
+    OP_SOFTMAX_DERIVATIVE,
+    OP_RELU,
+    OP_RELU_DERIVATIVE,
+    OP_LEAKY_RELU,
+    OP_LEAKY_RELU_DERIVATIVE,
     OP_EXPM1,
     OP_SQRT,
     OP_LOG,
@@ -22,6 +29,7 @@ typedef enum
     OP_SINH,
     OP_COSH,
     OP_TANH,
+    OP_TANH_DERIVATIVE,
     OP_SIN,
     OP_COS,
     OP_TAN,
@@ -68,7 +76,11 @@ typedef enum
     OP_MINIMUM,
     OP_BROADCAST,
     OP_REDUCE_ALL,
-    OP_REDUCE_ANY
+    OP_REDUCE_ANY,
+
+    /* Internal masks used by autograd to mirror min/max tie semantics. */
+    OP_MAXIMUM_MASK,
+    OP_MINIMUM_MASK
 } operation_type_t;
 
 #endif

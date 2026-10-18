@@ -3,12 +3,12 @@
 
 #include "php.h"
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_number_binary, 0, 0, 2)
-    ZEND_ARG_INFO(0, left)
-    ZEND_ARG_INFO(0, right)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_number_binary, 0, 2, IS_MIXED, 0)
+    ZEND_ARG_TYPE_INFO(0, left, IS_MIXED, 0)
+    ZEND_ARG_TYPE_INFO(0, right, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
 
-ZEND_BEGIN_ARG_INFO_EX(arginfo_number_unary, 0, 0, 0)
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_number_unary, 0, 0, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
 
 static const zend_function_entry number_methods[] = {

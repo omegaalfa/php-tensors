@@ -109,13 +109,25 @@
     }                                      \
     case OP_MAXIMUM:                       \
     {                                      \
-        typedef MaxOpT<scalar_t> bin_op_t; \
+        typedef MaximumOpT<scalar_t> bin_op_t; \
         __VA_ARGS__;                       \
         break;                             \
     }                                      \
     case OP_MINIMUM:                       \
     {                                      \
-        typedef MinOpT<scalar_t> bin_op_t; \
+        typedef MinimumOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                       \
+        break;                             \
+    }                                      \
+    case OP_MAXIMUM_MASK:                  \
+    {                                      \
+        typedef MaximumMaskOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                       \
+        break;                             \
+    }                                      \
+    case OP_MINIMUM_MASK:                  \
+    {                                      \
+        typedef MinimumMaskOpT<scalar_t> bin_op_t; \
         __VA_ARGS__;                       \
         break;                             \
     }                                      \
@@ -155,6 +167,18 @@
         __VA_ARGS__;                       \
         break;                             \
     }                                      \
+    case OP_LEAKY_RELU:                    \
+    {                                      \
+        typedef LeakyReluOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                       \
+        break;                             \
+    }                                      \
+    case OP_LEAKY_RELU_DERIVATIVE:         \
+    {                                      \
+        typedef LeakyReluDerivativeOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                       \
+        break;                             \
+    }                                      \
     default:                               \
         return;                            \
     }
@@ -168,6 +192,36 @@
         __VA_ARGS__;                         \
         break;                               \
     }                                        \
+    case OP_SIGMOID:                          \
+    {                                         \
+        typedef SigmoidOpT<scalar_t> bin_op_t;\
+        __VA_ARGS__;                          \
+        break;                                \
+    }                                         \
+    case OP_SIGMOID_DERIVATIVE:               \
+    {                                         \
+        typedef SigmoidDerivativeOpT<scalar_t> bin_op_t;\
+        __VA_ARGS__;                          \
+        break;                                \
+    }                                         \
+    case OP_SOFTMAX_DERIVATIVE:               \
+    {                                         \
+        typedef SoftmaxDerivativeOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                          \
+        break;                                \
+    }                                         \
+    case OP_RELU:                             \
+    {                                         \
+        typedef ReluOpT<scalar_t> bin_op_t;   \
+        __VA_ARGS__;                          \
+        break;                                \
+    }                                         \
+    case OP_RELU_DERIVATIVE:                  \
+    {                                         \
+        typedef ReluDerivativeOpT<scalar_t> bin_op_t; \
+        __VA_ARGS__;                          \
+        break;                                \
+    }                                         \
     case OP_EXPM1:                           \
     {                                        \
         typedef Expm1OpT<scalar_t> bin_op_t; \
@@ -243,6 +297,12 @@
     case OP_TANH:                            \
     {                                        \
         typedef TanhOpT<scalar_t> bin_op_t;  \
+        __VA_ARGS__;                         \
+        break;                               \
+    }                                        \
+    case OP_TANH_DERIVATIVE:                 \
+    {                                        \
+        typedef TanhDerivativeOpT<scalar_t> bin_op_t; \
         __VA_ARGS__;                         \
         break;                               \
     }                                        \

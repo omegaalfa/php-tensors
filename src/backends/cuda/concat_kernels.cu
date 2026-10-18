@@ -101,3 +101,95 @@ extern "C" int launch_concat_kernel_host(
         return 1;
     return 0;
 }
+
+struct StackParams
+{
+    void *input_ptrs[MAX_CONCAT_TENSORS];
+    size_t input_strides[MAX_CONCAT_TENSORS][MAX_DIMS];
+    int input_shape[MAX_DIMS];
+    int output_shape[MAX_DIMS];
+    int input_ndims;
+    int output_ndims;
+    int axis;
+    int num_tensors;
+    size_t total_elements;
+    size_t element_size;
+};
+
+static __global__ void stack_kernel(StackParams params, unsigned char *output)
+{
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= params.total_elements)
+        return;
+
+    int coordinates[MAX_DIMS];
+    size_t remainder = idx;
+    for (int dimension = params.output_ndims - 1; dimension >= 0; dimension--)
+    {
+        coordinates[dimension] = remainder % (size_t)params.output_shape[dimension];
+        remainder /= (size_t)params.output_shape[dimension];
+    }
+
+    int tensor_index = coordinates[params.axis];
+    size_t input_offset = 0;
+    for (int dimension = 0; dimension < params.input_ndims; dimension++)
+    {
+        int output_dimension = dimension < params.axis ? dimension : dimension + 1;
+        input_offset += (size_t)coordinates[output_dimension] *
+                        params.input_strides[tensor_index][dimension];
+    }
+
+    const unsigned char *input =
+        (const unsigned char *)params.input_ptrs[tensor_index];
+    size_t output_byte_offset = idx * params.element_size;
+    size_t input_byte_offset = input_offset * params.element_size;
+    for (size_t byte = 0; byte < params.element_size; byte++)
+        output[output_byte_offset + byte] = input[input_byte_offset + byte];
+}
+
+extern "C" int launch_stack_kernel_host(
+    tensor_t **input_tensors, int num_tensors, tensor_t *output_tensor, int axis)
+{
+    if (!input_tensors || !output_tensor || num_tensors < 1 ||
+        num_tensors > MAX_CONCAT_TENSORS || axis < 0 ||
+        axis >= output_tensor->ndims || output_tensor->ndims < 1 ||
+        !output_tensor->element_size)
+        return 1;
+
+    if (output_tensor->total_size == 0)
+        return 0;
+
+    StackParams params = {};
+    params.num_tensors = num_tensors;
+    params.input_ndims = output_tensor->ndims - 1;
+    params.output_ndims = output_tensor->ndims;
+    params.axis = axis;
+    params.total_elements = output_tensor->total_size;
+    params.element_size = output_tensor->element_size;
+    for (int dimension = 0; dimension < params.output_ndims; dimension++)
+        params.output_shape[dimension] = output_tensor->shape[dimension];
+
+    for (int i = 0; i < num_tensors; i++)
+    {
+        tensor_t *input = input_tensors[i];
+        if (!input || input->ndims != params.input_ndims ||
+            input->dtype != output_tensor->dtype ||
+            (input->total_size && !input->data))
+            return 1;
+        params.input_ptrs[i] = input->data;
+        for (int dimension = 0; dimension < params.input_ndims; dimension++)
+        {
+            params.input_shape[dimension] = input->shape[dimension];
+            if (input->shape[dimension] !=
+                output_tensor->shape[dimension < axis ? dimension : dimension + 1])
+                return 1;
+            params.input_strides[i][dimension] = input->strides[dimension];
+        }
+    }
+
+    stack_kernel<<<cuda_grid_1d(params.total_elements), 256>>>(
+        params, (unsigned char *)output_tensor->data);
+    if (cuda_launch_status(true) != cudaSuccess)
+        return 1;
+    return 0;
+}

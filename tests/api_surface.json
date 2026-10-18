@@ -808,6 +808,32 @@
                     ],
                     "returnType": "self"
                 },
+                "clip": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "minimum",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "maximum",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "concat": {
                     "static": false,
                     "abstract": false,
@@ -1456,6 +1482,40 @@
                     ],
                     "returnType": "self"
                 },
+                "leakyRelu": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "alpha",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0.01
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "leakyReluDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "alpha",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0.01
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "linspace": {
                     "static": true,
                     "abstract": false,
@@ -1535,6 +1595,68 @@
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
+                    "returnType": "self"
+                },
+                "logspace": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "start",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "stop",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "num",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 50
+                        },
+                        {
+                            "name": "endpoint",
+                            "type": "bool",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": true
+                        },
+                        {
+                            "name": "base",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 10
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
                     "returnType": "self"
                 },
                 "lt": {
@@ -1897,6 +2019,73 @@
                     ],
                     "returnType": "self"
                 },
+                "randomUniform": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "shape",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "minimum",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "maximum",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "seed",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "relu": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
+                "reluDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
                 "repeat": {
                     "static": false,
                     "abstract": false,
@@ -2025,6 +2214,20 @@
                     ],
                     "returnType": "self"
                 },
+                "sigmoid": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
+                "sigmoidDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
                 "sin": {
                     "static": false,
                     "abstract": false,
@@ -2073,6 +2276,13 @@
                     ],
                     "returnType": "self"
                 },
+                "softmaxDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
                 "sqrt": {
                     "static": false,
                     "abstract": false,
@@ -2093,6 +2303,32 @@
                             "optional": true,
                             "hasDefault": true,
                             "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "stack": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "tensors",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "axis",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0
                         }
                     ],
                     "returnType": "self"
@@ -2191,6 +2427,13 @@
                     "returnType": "self"
                 },
                 "tanh": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
+                "tanhDerivative": {
                     "static": false,
                     "abstract": false,
                     "returnsReference": false,
@@ -2865,7 +3108,7 @@
                     "parameters": [
                         {
                             "name": "gradient",
-                            "type": "?self",
+                            "type": "?PhpTensors\\HostArray",
                             "byReference": false,
                             "variadic": false,
                             "optional": true,
@@ -2929,6 +3172,32 @@
                             "variadic": false,
                             "optional": true,
                             "hasDefault": true,
+                            "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "clip": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "minimum",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "maximum",
+                            "type": "int|float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
                             "default": null
                         }
                     ],
@@ -3095,7 +3364,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|float",
+                            "type": "PhpTensors\\HostArray|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3435,7 +3704,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|float",
+                            "type": "PhpTensors\\HostArray|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3516,7 +3785,7 @@
                     "abstract": false,
                     "returnsReference": false,
                     "parameters": [],
-                    "returnType": "?self"
+                    "returnType": "?PhpTensors\\HostArray"
                 },
                 "gt": {
                     "static": false,
@@ -3525,7 +3794,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|float",
+                            "type": "PhpTensors\\HostArray|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3600,7 +3869,7 @@
                         },
                         {
                             "name": "scale",
-                            "type": "?self",
+                            "type": "?PhpTensors\\HostArray",
                             "byReference": false,
                             "variadic": false,
                             "optional": true,
@@ -3609,7 +3878,7 @@
                         },
                         {
                             "name": "bias",
-                            "type": "?self",
+                            "type": "?PhpTensors\\HostArray",
                             "byReference": false,
                             "variadic": false,
                             "optional": true,
@@ -3626,12 +3895,46 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|float",
+                            "type": "PhpTensors\\HostArray|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
                             "hasDefault": false,
                             "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "leakyRelu": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "alpha",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0.01
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "leakyReluDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "alpha",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0.01
                         }
                     ],
                     "returnType": "self"
@@ -3717,6 +4020,68 @@
                     "parameters": [],
                     "returnType": "self"
                 },
+                "logspace": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "start",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "stop",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "num",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 50
+                        },
+                        {
+                            "name": "endpoint",
+                            "type": "bool",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": true
+                        },
+                        {
+                            "name": "base",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 10
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
                 "lt": {
                     "static": false,
                     "abstract": false,
@@ -3724,7 +4089,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|float",
+                            "type": "PhpTensors\\HostArray|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3775,7 +4140,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|int|float|bool",
+                            "type": "PhpTensors\\HostArray|int|float|bool",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3826,7 +4191,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|int|float|bool",
+                            "type": "PhpTensors\\HostArray|int|float|bool",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3886,7 +4251,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|float",
+                            "type": "PhpTensors\\HostArray|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -3962,7 +4327,7 @@
                     "parameters": [
                         {
                             "name": "other",
-                            "type": "self|int|float",
+                            "type": "PhpTensors\\HostArray|int|float",
                             "byReference": false,
                             "variadic": false,
                             "optional": false,
@@ -4075,6 +4440,73 @@
                             "default": null
                         }
                     ],
+                    "returnType": "self"
+                },
+                "randomUniform": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "shape",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "minimum",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "maximum",
+                            "type": "float",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "seed",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "dtype",
+                            "type": "?string",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": "float32"
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "relu": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
+                "reluDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
                     "returnType": "self"
                 },
                 "repeat": {
@@ -4205,6 +4637,20 @@
                     ],
                     "returnType": "self"
                 },
+                "sigmoid": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
+                "sigmoidDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
                 "sin": {
                     "static": false,
                     "abstract": false,
@@ -4253,6 +4699,13 @@
                     ],
                     "returnType": "self"
                 },
+                "softmaxDerivative": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
                 "sqrt": {
                     "static": false,
                     "abstract": false,
@@ -4273,6 +4726,32 @@
                             "optional": true,
                             "hasDefault": true,
                             "default": null
+                        }
+                    ],
+                    "returnType": "self"
+                },
+                "stack": {
+                    "static": true,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [
+                        {
+                            "name": "tensors",
+                            "type": "array",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": false,
+                            "hasDefault": false,
+                            "default": null
+                        },
+                        {
+                            "name": "axis",
+                            "type": "int",
+                            "byReference": false,
+                            "variadic": false,
+                            "optional": true,
+                            "hasDefault": true,
+                            "default": 0
                         }
                     ],
                     "returnType": "self"
@@ -4371,6 +4850,13 @@
                     "returnType": "self"
                 },
                 "tanh": {
+                    "static": false,
+                    "abstract": false,
+                    "returnsReference": false,
+                    "parameters": [],
+                    "returnType": "self"
+                },
+                "tanhDerivative": {
                     "static": false,
                     "abstract": false,
                     "returnsReference": false,

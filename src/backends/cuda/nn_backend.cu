@@ -205,15 +205,14 @@ static int nn_check(cudnnStatus_t status, const char *operation)
 {
     if (status == CUDNN_STATUS_SUCCESS) return 1;
     nn_fallback_allowed = status == CUDNN_STATUS_NOT_SUPPORTED ||
-        status == CUDNN_STATUS_ARCH_MISMATCH ||
-        status == CUDNN_STATUS_ALLOC_FAILED;
+        status == CUDNN_STATUS_ARCH_MISMATCH;
     snprintf(nn_error, sizeof(nn_error), "%s: %s", operation, cudnnGetErrorString(status));
     return 0;
 }
 static int nn_cuda_check(cudaError_t status, const char *operation)
 {
     if (status == cudaSuccess) return 1;
-    nn_fallback_allowed = status == cudaErrorMemoryAllocation;
+    nn_fallback_allowed = 0;
     snprintf(nn_error, sizeof(nn_error), "%s: %s", operation, cudaGetErrorString(status));
     return 0;
 }

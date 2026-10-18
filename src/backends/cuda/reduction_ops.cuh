@@ -8,7 +8,26 @@
 #include <cmath>
 #include <limits>
 #include <cub/cub.cuh>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 #include "backend_info.h"
+
+// CUB 3 (bundled with CCCL) removed the legacy CUB fancy-iterator names.
+// Keep the local aliases in the old three-parameter order so the reduction
+// code remains source-compatible with older CUDA/CUB toolkits.
+#if defined(CUB_VERSION) && CUB_VERSION >= 300000
+template <typename T>
+using reduction_counting_iterator = thrust::counting_iterator<T>;
+
+template <typename ValueT, typename UnaryOp, typename InputIterator>
+using reduction_transform_iterator = thrust::transform_iterator<UnaryOp, InputIterator>;
+#else
+template <typename T>
+using reduction_counting_iterator = cub::CountingInputIterator<T>;
+
+template <typename ValueT, typename UnaryOp, typename InputIterator>
+using reduction_transform_iterator = cub::TransformInputIterator<ValueT, UnaryOp, InputIterator>;
+#endif
 
 cudaError_t reduction_workspace(cudaStream_t stream, size_t bytes, void **storage);
 extern thread_local cudaError_t reduction_error;
@@ -422,7 +441,7 @@ void launch_reduce_op_kernel(InputT *input, AccumT *result,
         (std::is_same<Op, MaxOpT<AccumT>>::value || std::is_same<Op, MinOpT<AccumT>>::value);
     if (!ordered_float && total_elements_out == 1 && input_strides[axis] == 1 && input_shape[axis] >= 4096)
     {
-        using Iterator = cub::TransformInputIterator<AccumT, ReductionCast<InputT, AccumT>, const InputT *>;
+        using Iterator = reduction_transform_iterator<AccumT, ReductionCast<InputT, AccumT>, const InputT *>;
         Iterator iterator(input + input_base_offset, ReductionCast<InputT, AccumT>());
         CubReductionOp<AccumT, Op> operation;
         AccumT identity;
@@ -484,8 +503,8 @@ void launch_arg_reduce_kernel(T *input, int *result_idx,
         else
             identity = std::is_floating_point<T>::value ? std::numeric_limits<T>::infinity() : std::numeric_limits<T>::max();
         using Value = IndexedReductionValue<T>;
-        using Iterator = cub::TransformInputIterator<Value, IndexedReductionInput<T, Op>, cub::CountingInputIterator<int>>;
-        Iterator iterator(cub::CountingInputIterator<int>(0), IndexedReductionInput<T, Op>{input + input_base_offset, identity});
+        using Iterator = reduction_transform_iterator<Value, IndexedReductionInput<T, Op>, reduction_counting_iterator<int>>;
+        Iterator iterator(reduction_counting_iterator<int>(0), IndexedReductionInput<T, Op>{input + input_base_offset, identity});
         IndexedReductionOp<T, Op> operation;
         Value initial = {identity, 0};
         size_t bytes = 0;

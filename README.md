@@ -226,8 +226,14 @@ Packed transfers avoid per-value PHP conversion; keep intermediates on GPU.
 - **Elementwise math:** `sqrt()`, `exp()`, `expm1()`, `exp2()`, `log()`,
   `log1p()`, `log2()`, `log10()`, `sin()`, `cos()`, `tan()`, `abs()`, `neg()`,
   `asin()`, `acos()`, `atan()`, `sinh()`, `cosh()`, `tanh()`, `floor()`,
-  `ceil()` and `round()`. `expm1()` and `log1p()` use numerically stable CUDA
-  functions near zero.
+  `ceil()`, `round()`, numerically stable `sigmoid()`, `sigmoidDerivative()`,
+  `relu()`, `reluDerivative()`, `leakyRelu()`, `leakyReluDerivative()` and
+  `tanhDerivative()`. `expm1()` and `log1p()` use specialized CUDA functions near
+  zero; `sigmoid()` uses a
+  sign-aware formulation for extreme positive and negative inputs and is
+  currently available only for `float32` and `float64`. `sigmoidDerivative()`
+  expects values already activated and computes `y * (1 - y)` without
+  clamping.
 - **Normalization:** `softmax()` computes stable probabilities along an axis
   (last axis by default), preserving `float32`/`float64`, widening low-
   precision inputs to `float32`, and promoting integer and boolean inputs to
@@ -272,6 +278,17 @@ and updates to `float32`, returning FP32 results and gradients.
 matmul and elementwise autograd are supported; leaf gradients use `float32`,
 while operation outputs and explicit backward seeds retain their dtype.
 `softmax()` and `layerNorm()` return `float32` for low-precision inputs.
+For eager softmax, a slice containing NaN returns NaN throughout; positive
+infinities share probability uniformly, and an all-negative-infinity slice is
+uniform. Partially masked slices containing finite values and `-Inf` use the
+ordinary stable decomposition and support the complete softmax backward; the
+masked probabilities and their input gradients are zero. NaN, `+Inf`, and
+fully `-Inf` slices remain rejected for Autograd because their policy
+boundaries do not have a valid ordinary backward derivative. Fusion continues
+to use the existing finite-value decomposition.
+`softmaxDerivative()` expects already normalized softmax values and computes only
+the diagonal approximation `y * (1 - y)`; it does not compute the full Jacobian
+or a complete softmax backward pass.
 
 ### Shape operations, views and indexing
 
@@ -333,12 +350,14 @@ $weight = CudaArray::fromFlatArray([1, 0, 0, 1], [2, 2])->requiresGrad();
 $loss = $input->matmul($weight)->mean();
 $loss->backward();
 
-$gradient = $weight->grad();
+$gradient = $weight->grad(); // independent GPU copy of the accumulated gradient
 $weight->zeroGrad();
 ```
 
-Gradients accumulate until `zeroGrad()`. `detach()` returns a shared-storage
-view without gradient history. Non-scalar outputs need a matching seed.
+Gradients accumulate until `zeroGrad()`. `grad()` returns an independent GPU
+copy, so the returned snapshot remains valid and isolated after `zeroGrad()` or
+destruction of the parameter. `detach()` returns a shared-storage view without
+gradient history. Non-scalar outputs need a matching seed.
 Backward releases the graph by default; pass `retainGraph: true` to keep it.
 In-place changes to saved tensors make backward fail rather than use stale data.
 
@@ -352,6 +371,10 @@ Backward can run in Fusion; mark inputs with `requiresGrad()` before compiling.
 parameters and explicit state, suitable for Fusion capture. SGD state contains
 velocity; AdamW state contains first/second moments and beta powers.
 `weightDecayMask` can exclude selected parameters from decay.
+Optimizer parameters are currently restricted to `float32` and `float64`.
+FP16/BF16 operations can produce FP32 leaf gradients, but there are no
+automatic FP32 master weights or loss-scaling support; applications must keep
+master parameters explicitly and cast low-precision data when using AdamW.
 
 ## Custom CUDA kernels
 
@@ -617,6 +640,8 @@ $gpu = new CudaArray([1, 2, 3]);
 
 `PhpTensors\CudaArray` and `PhpTensors\HostArray` are the public tensor classes.
 All public classes use the `PhpTensors` namespace.
+For a concise old-to-new API mapping, see
+[`docs/migration-php-tensors.md`](docs/migration-php-tensors.md).
 Mixed-backend arithmetic does not transfer data implicitly: use
 `HostArray::toGpu()` or `CudaArray::toHost()` to request a transfer explicitly.
 Host arithmetic currently supports same-shape `float32`/`float64` tensors and

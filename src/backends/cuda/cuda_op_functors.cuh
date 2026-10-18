@@ -160,6 +160,70 @@ struct MinOpT
 };
 
 template <typename T>
+struct MaximumOpT
+{
+    static __device__ __forceinline__ T apply(T a, T b)
+    {
+        if constexpr (std::is_floating_point<T>::value)
+        {
+            if (isnan(a)) return a;
+            if (isnan(b)) return b;
+            if (a == static_cast<T>(0) && b == static_cast<T>(0))
+                return (!signbit(a) || !signbit(b)) ? static_cast<T>(0) : -static_cast<T>(0);
+        }
+        return (a > b) ? a : b;
+    }
+};
+
+template <typename T>
+struct MinimumOpT
+{
+    static __device__ __forceinline__ T apply(T a, T b)
+    {
+        if constexpr (std::is_floating_point<T>::value)
+        {
+            if (isnan(a)) return a;
+            if (isnan(b)) return b;
+            if (a == static_cast<T>(0) && b == static_cast<T>(0))
+                return (signbit(a) || signbit(b)) ? -static_cast<T>(0) : static_cast<T>(0);
+        }
+        return (a < b) ? a : b;
+    }
+};
+
+template <typename T>
+struct MaximumMaskOpT
+{
+    static __device__ __forceinline__ T apply(T a, T b)
+    {
+        if constexpr (std::is_floating_point<T>::value)
+        {
+            if (isnan(a)) return static_cast<T>(1);
+            if (isnan(b)) return static_cast<T>(0);
+            if (a == static_cast<T>(0) && b == static_cast<T>(0))
+                return (!signbit(a) || signbit(b)) ? static_cast<T>(1) : static_cast<T>(0);
+        }
+        return (a >= b) ? static_cast<T>(1) : static_cast<T>(0);
+    }
+};
+
+template <typename T>
+struct MinimumMaskOpT
+{
+    static __device__ __forceinline__ T apply(T a, T b)
+    {
+        if constexpr (std::is_floating_point<T>::value)
+        {
+            if (isnan(a)) return static_cast<T>(1);
+            if (isnan(b)) return static_cast<T>(0);
+            if (a == static_cast<T>(0) && b == static_cast<T>(0))
+                return (signbit(a) || !signbit(b)) ? static_cast<T>(1) : static_cast<T>(0);
+        }
+        return (a <= b) ? static_cast<T>(1) : static_cast<T>(0);
+    }
+};
+
+template <typename T>
 struct AllOpT
 {
     static __device__ __forceinline__ bool apply(bool a, T b) { return a && (b != static_cast<T>(0)); }
@@ -182,6 +246,91 @@ struct ExpOpT
             return exp(a);
         else
             return static_cast<T>(expf(static_cast<float>(a)));
+    }
+};
+
+template <typename T>
+struct SigmoidOpT
+{
+    static __device__ __forceinline__ T apply(T a)
+    {
+        if constexpr (std::is_same<T, float>::value)
+        {
+            if (a >= 0.0f)
+            {
+                return 1.0f / (1.0f + expf(-a));
+            }
+            const float e = expf(a);
+            return e / (1.0f + e);
+        }
+        else if constexpr (std::is_same<T, double>::value)
+        {
+            if (a >= 0.0)
+            {
+                return 1.0 / (1.0 + exp(-a));
+            }
+            const double e = exp(a);
+            return e / (1.0 + e);
+        }
+        else
+        {
+            return static_cast<T>(0);
+        }
+    }
+};
+
+template <typename T>
+struct SigmoidDerivativeOpT
+{
+    static __device__ __forceinline__ T apply(T a)
+    {
+        return a * (static_cast<T>(1) - a);
+    }
+};
+
+template <typename T>
+struct SoftmaxDerivativeOpT
+{
+    static __device__ __forceinline__ T apply(T a)
+    {
+        return a * (static_cast<T>(1) - a);
+    }
+};
+
+template <typename T>
+struct ReluOpT
+{
+    static __device__ __forceinline__ T apply(T a)
+    {
+        return a > static_cast<T>(0) ? a : static_cast<T>(0);
+    }
+};
+
+template <typename T>
+struct ReluDerivativeOpT
+{
+    static __device__ __forceinline__ T apply(T a)
+    {
+        return a > static_cast<T>(0) ? static_cast<T>(1) : static_cast<T>(0);
+    }
+};
+
+template <typename T>
+struct LeakyReluOpT
+{
+    static __device__ __forceinline__ T apply(T value, T alpha = static_cast<T>(0.01))
+    {
+        return value > static_cast<T>(0) ? value : alpha * value;
+    }
+};
+
+template <typename T>
+struct LeakyReluDerivativeOpT
+{
+    static __device__ __forceinline__ T apply(T value, T alpha,
+                                               int = 0)
+    {
+        return value > static_cast<T>(0) ? static_cast<T>(1) : alpha;
     }
 };
 
@@ -364,6 +513,15 @@ struct TanhOpT
             return tanh(a);
         else
             return static_cast<T>(tanhf(static_cast<float>(a)));
+    }
+};
+
+template <typename T>
+struct TanhDerivativeOpT
+{
+    static __device__ __forceinline__ T apply(T a)
+    {
+        return static_cast<T>(1) - a * a;
     }
 };
 

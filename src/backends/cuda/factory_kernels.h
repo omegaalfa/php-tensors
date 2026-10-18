@@ -45,6 +45,11 @@ extern "C"
                               int64_t integer_start, int64_t integer_step);
     cudaError_t launch_linspace(void *output, dtype_t dtype, size_t total_elements,
                                 double start, double stop, int endpoint);
+    cudaError_t launch_scale_uniform_range_kernel(
+        void *base, dtype_t dtype, size_t total_elements,
+        double minimum, double maximum);
+    cudaError_t launch_logspace(void *output, dtype_t dtype, size_t total_elements,
+                                double start, double stop, double base, int endpoint);
     cudaError_t launch_tensor_transform(const void *input, void *output,
                                         dtype_t dtype,
                                         const tensor_transform_spec_t *spec,
@@ -73,6 +78,8 @@ extern "C"
                                                   double mean,
                                                   double standard_deviation,
                                                   size_t total_elements);
+    cudaError_t launch_validate_finite(const void *data, dtype_t dtype,
+                                       size_t total_elements, unsigned int *invalid);
 
 #ifdef __cplusplus
 }

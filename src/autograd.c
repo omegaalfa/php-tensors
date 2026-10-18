@@ -1086,7 +1086,9 @@ static int autograd_propagate(tensor_t *output, tensor_t *upstream,
                 case OP_MAXIMUM:
                 case OP_MINIMUM:
                     {
-                        operation_type_t comparison = node->op == OP_MAXIMUM ? OP_GE : OP_LE;
+                        operation_type_t comparison = node->op == OP_MAXIMUM
+                            ? (fusion_active() ? OP_GE : OP_MAXIMUM_MASK)
+                            : (fusion_active() ? OP_LE : OP_MINIMUM_MASK);
                         tensor_t *mask = cuda_tensor_op(node->a, node->b, comparison);
                         tensor_t *zeros = mask ? gradient_scale(upstream, 0.0) : NULL;
                         if (mask && zeros)
@@ -1178,9 +1180,11 @@ static int autograd_propagate(tensor_t *output, tensor_t *upstream,
             {
                 operation_type_t comparison;
                 if (node->op == OP_MAXIMUM)
-                    comparison = node->parameter ? OP_GT : OP_GE;
+                    comparison = node->parameter ? OP_GT :
+                        (fusion_active() ? OP_GE : OP_MAXIMUM_MASK);
                 else
-                    comparison = node->parameter ? OP_LT : OP_LE;
+                    comparison = node->parameter ? OP_LT :
+                        (fusion_active() ? OP_LE : OP_MINIMUM_MASK);
                 tensor_t *mask = node->parameter
                     ? cuda_scalar_op(node->a, node->scalar, comparison)
                     : cuda_scalar_op(node->a, node->scalar, comparison);

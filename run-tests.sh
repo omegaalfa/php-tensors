@@ -2,6 +2,7 @@
 set -e
 
 EXT_NAME="phptensors"
+SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
 PHP_CONFIG=${PHP_CONFIG:-php-config}
 PHP_BIN=${PHP_BIN:-php}
 PHP_VERSION=$($PHP_CONFIG --version | cut -d. -f1,2)
@@ -20,6 +21,9 @@ if [ ! -d "$BUILD_DIR" ]; then
 fi
 
 cd "$BUILD_DIR"
+if [ ! -d stubs ] && [ -d "$SOURCE_DIR/stubs" ]; then
+   cp -R "$SOURCE_DIR/stubs" stubs
+fi
 "$PHP_BIN" -n tests/check_api_surface.php
 if [ "$CPU_ONLY" -eq 1 ]; then
    make test TESTS="tests/backend_contract.phpt tests/cpu_backend.phpt tests/namespaces.phpt" TEST_PHP_ARGS="-q"
@@ -51,4 +55,21 @@ ${CC:-cc} -D_GNU_SOURCE -ffunction-sections -fdata-sections \
    -I"${CUDA_HOME:-/usr/local/cuda}/include" -Isrc -Isrc/backends/cuda -Isrc/cuda_array \
    tests/where_shape_test.c -o "$WHERE_TEST_BINARY"
 "$WHERE_TEST_BINARY"
+
+AUTOGRAD_METADATA_BINARY=$(mktemp)
+trap 'rm -f "$POOL_TEST_BINARY" "$NPY_TEST_BINARY" "$WHERE_TEST_BINARY" "$AUTOGRAD_METADATA_BINARY"' EXIT
+${CC:-cc} -D_GNU_SOURCE -ffunction-sections -fdata-sections \
+   -Wl,--gc-sections $($PHP_CONFIG --includes) \
+   -I"${CUDA_HOME:-/usr/local/cuda}/include" -Isrc -Isrc/backends/cuda -Isrc/cuda_array \
+   tests/autograd_metadata_test.c -o "$AUTOGRAD_METADATA_BINARY"
+"$AUTOGRAD_METADATA_BINARY"
+
+AUTOGRAD_NODE_BINARY=$(mktemp)
+trap 'rm -f "$POOL_TEST_BINARY" "$NPY_TEST_BINARY" "$WHERE_TEST_BINARY" "$AUTOGRAD_METADATA_BINARY" "$AUTOGRAD_NODE_BINARY"' EXIT
+${CC:-cc} -D_GNU_SOURCE -ffunction-sections -fdata-sections \
+   -Wl,--gc-sections $($PHP_CONFIG --includes) \
+   -I"${CUDA_HOME:-/usr/local/cuda}/include" -Isrc -Isrc/backends/cuda -Isrc/cuda_array \
+   tests/autograd_node_test.c -o "$AUTOGRAD_NODE_BINARY"
+"$AUTOGRAD_NODE_BINARY"
+
 make test TEST_PHP_ARGS="-q"

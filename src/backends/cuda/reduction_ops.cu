@@ -100,8 +100,8 @@ static cudaError_t launch_moments_typed(
         memcpy(transform.strides, input_strides, input_ndims * sizeof(size_t));
 
         using State = WelfordState<AccumT>;
-        using Counter = cub::CountingInputIterator<size_t>;
-        using Iterator = cub::TransformInputIterator<State, WelfordInputTransform<InputT, AccumT>, Counter>;
+        using Counter = reduction_counting_iterator<size_t>;
+        using Iterator = reduction_transform_iterator<State, WelfordInputTransform<InputT, AccumT>, Counter>;
         Counter counter(0);
         Iterator iterator(counter, transform);
         WelfordCombine<AccumT> combine;
@@ -386,13 +386,13 @@ static cudaError_t launch_cumulative_typed(
     const InputT *input, OutputT *output, size_t total_items,
     size_t segment_length, size_t segment_count, cudaStream_t stream)
 {
-    using Counter = cub::CountingInputIterator<size_t>;
+    using Counter = reduction_counting_iterator<size_t>;
     size_t temporary_bytes = 0;
     cudaError_t error;
 
     if (segment_count == 1)
     {
-        using InputIterator = cub::TransformInputIterator<
+        using InputIterator = reduction_transform_iterator<
             OutputT, CumulativeInput<InputT, OutputT>, Counter>;
         InputIterator input_iterator(Counter(0), CumulativeInput<InputT, OutputT>{input});
         error = cub::DeviceScan::InclusiveScan(
@@ -411,7 +411,7 @@ static cudaError_t launch_cumulative_typed(
     }
 
     using SegmentValue = CumulativeSegmentValue<OutputT>;
-    using SegmentInput = cub::TransformInputIterator<
+    using SegmentInput = reduction_transform_iterator<
         SegmentValue, CumulativeSegmentInput<InputT, OutputT>, Counter>;
     SegmentInput input_iterator(Counter(0),
         CumulativeSegmentInput<InputT, OutputT>{input, segment_length});
@@ -762,8 +762,8 @@ static cudaError_t launch_cumulative_product_gradient_typed(
         memcpy(transform.upstream_strides, upstream_strides,
                input_ndims * sizeof(size_t));
 
-    using Counter = cub::CountingInputIterator<size_t>;
-    using Iterator = cub::TransformInputIterator<
+    using Counter = reduction_counting_iterator<size_t>;
+    using Iterator = reduction_transform_iterator<
         CumulativeGradientValue<T>, CumulativeProductGradientInput<T>, Counter>;
     Iterator input_iterator(Counter(0), transform);
     size_t temporary_bytes = 0;
